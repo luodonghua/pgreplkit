@@ -1,0 +1,50 @@
+# Deploy the interactive replication guide (gh-pages/) to GitHub Pages.
+#
+# The branch-source dropdown only offers "/" or "/docs", so we publish the
+# gh-pages/ folder via GitHub Actions instead. After merging this workflow, set
+# Settings -> Pages -> Source to "GitHub Actions" (not "Deploy from a branch").
+name: Deploy static content to Pages
+
+on:
+  # Runs on pushes to the default branch that touch the site (or the workflow).
+  push:
+    branches: ["main"]
+    paths:
+      - "gh-pages/**"
+      - ".github/workflows/deploy-pages.yml"
+
+  # Allows manual runs from the Actions tab.
+  workflow_dispatch:
+
+# Permissions required for the GITHUB_TOKEN to deploy to Pages.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One concurrent deployment; don't cancel an in-progress production deploy.
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # Publish only the guide folder so the site root is the guide itself
+          # (served at https://<user>.github.io/<repo>/). .nojekyll inside it
+          # disables Jekyll so content/_shared/ is served.
+          path: "gh-pages"
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
