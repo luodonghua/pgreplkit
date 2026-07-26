@@ -9,7 +9,7 @@ description = "Automate and de-risk PostgreSQL logical replication for blue-gree
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "donghual" }]
+authors = [{ name = "luodonghua" }]
 keywords = ["postgresql", "logical-replication", "blue-green", "rds", "aurora", "migration"]
 
 dependencies = [
