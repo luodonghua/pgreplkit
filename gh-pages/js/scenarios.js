@@ -214,7 +214,7 @@
       // Physical seed only valid RDS -> RDS (same platform preserves LSN continuity).
       appliesWhen: (ctx) => ctx.source === "rds-pg" && ctx.target === "rds-pg",
       versionIndependent: false,
-      blurb: "Fast physical seed via an RDS snapshot restore that preserves LSN continuity (rds_tools.logical_seed_lsn), then exactly-once logical CDC. Same major version only."
+      blurb: "Fast physical seed via an RDS snapshot restore that preserves LSN continuity (rds_tools.logical_seed_lsn), then exactly-once logical CDC. The restore lands on the source's major version; to also upgrade, upgrade the restored instance in place first, then replicate (logical CDC streams across majors)."
     },
     {
       id: "aurora-clone",
@@ -222,7 +222,7 @@
       short: "aurora-fast-clone",
       appliesWhen: (ctx) => ctx.source === "aurora-pg" && ctx.target === "aurora-pg",
       versionIndependent: false,
-      blurb: "Instant copy-on-write clone (aurora_volume_logical_start_lsn) regardless of data size, then exactly-once logical CDC. Same major version only."
+      blurb: "Instant copy-on-write clone (aurora_volume_logical_start_lsn) regardless of data size, then exactly-once logical CDC. The clone matches the source's major version; to also upgrade, upgrade the clone in place first, then replicate (logical CDC streams across majors)."
     }
   ];
 
@@ -293,14 +293,16 @@
     },
 
     function physicalSeedSamePlatform(ctx) {
-      // Physical-seed methods require identical platform AND same major version.
+      // Physical-seed methods require an identical platform (same-cloud, same engine
+      // family). The seed lands on the source's major version; an in-place upgrade of
+      // the restored/cloned target before wiring replication supports the upgrade case.
       const m = byId(syncMethods, ctx.sync);
       if (!m || m.versionIndependent) return null;
       if (m.id === "rds-snapshot" && !(ctx.source === "rds-pg" && ctx.target === "rds-pg")) {
-        return "RDS Snapshot Restore only works RDS → RDS on the same major version. Use Replication Copy or pg_dump for cross-platform or cross-version.";
+        return "RDS Snapshot Restore only works RDS \u2192 RDS (a snapshot can't cross the RDS/Aurora boundary or clouds). Use Replication Copy or pg_dump for other pairs.";
       }
       if (m.id === "aurora-clone" && !(ctx.source === "aurora-pg" && ctx.target === "aurora-pg")) {
-        return "Aurora Fast Clone only works Aurora → Aurora on the same major version. Use Replication Copy or pg_dump for cross-platform or cross-version.";
+        return "Aurora Fast Clone only works Aurora \u2192 Aurora (a clone is within one Aurora cluster family). Use Replication Copy or pg_dump for other pairs.";
       }
       return null;
     },
@@ -323,8 +325,8 @@
   function byId(list, id) { return list.find((x) => x.id === id) || null; }
 
   function physicalSeedHint(method, source, target) {
-    if (method.id === "rds-snapshot") return "It requires both sides to be RDS PostgreSQL (same major version).";
-    if (method.id === "aurora-clone") return "It requires both sides to be Aurora PostgreSQL (same major version).";
+    if (method.id === "rds-snapshot") return "It requires both sides to be RDS PostgreSQL.";
+    if (method.id === "aurora-clone") return "It requires both sides to be Aurora PostgreSQL.";
     return "";
   }
 

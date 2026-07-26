@@ -138,7 +138,7 @@
       rows.push(["Scope note", `${sc.blurb}`]);
     }
     if (!m.versionIndependent) {
-      rows.push(["Same major version required", `The ${m.label} seed is physical, so source and target must be the <strong>same</strong> PostgreSQL major version. For cross-version, use Replication Copy or pg_dump.`]);
+      rows.push(["Major version", `The ${m.label} seed is physical, so the restored/cloned target starts on the source's <strong>major version</strong>. To finish on a newer major version, upgrade that target <strong>in place first</strong> (capture the seed LSN before the upgrade), then wire logical replication \u2014 it streams across majors. A pure logical copy/pg_dump is the alternative.`]);
     } else {
       rows.push(["Cross-version", `This sync method is version-independent \u2014 it streams across different major versions (e.g. 16 \u2192 17).`]);
     }

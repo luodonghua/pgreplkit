@@ -19,10 +19,12 @@
     Aurora public endpoints can hairpin to public IPs inside a VPC.
   </div>
   <div class="callout warn">
-    <span class="callout-title">Clone seed = same major version</span>
-    A clone is always the source's major version. For a cross-version move, use Replication Copy or
-    pg_dump. To upgrade <em>and</em> use the clone, capture the seed LSN before upgrading the clone
-    (see the note in the clone setup) &mdash; the same pattern AWS Blue/Green Deployments use.
+    <span class="callout-title">Clone seed and major-version upgrades</span>
+    The clone matches the source's major version. That also enables an <strong>upgrade</strong>:
+    capture the seed LSN while the clone is still on the old version, upgrade the clone in place, then
+    wire replication (logical CDC streams old&nbsp;&rarr;&nbsp;new) &mdash; the same pattern AWS
+    Blue/Green Deployments use (see the note in the clone setup). A logical Replication Copy or
+    pg_dump is the alternative if you'd rather not upgrade in place.
   </div>
 </div>
 

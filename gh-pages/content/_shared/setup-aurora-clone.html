@@ -7,10 +7,13 @@
     resume logical streaming from the clone's start position <strong>exactly once</strong>.
   </p>
   <div class="callout warn">
-    <span class="callout-title">Same major version only</span>
-    A clone is always the same major version as the source. For a cross-version move use Replication
-    Copy or pg_dump. (To combine the clone with a major upgrade, capture the seed LSN before
-    upgrading the clone &mdash; see the note at the end.)
+    <span class="callout-title">Version: the clone matches the source; upgrade after if needed</span>
+    A clone is always the same major version as the source &mdash; cloning does not change versions.
+    To combine this instant seed <em>with</em> a major-version upgrade (e.g. land on 18 from a 17
+    source), capture the seed LSN while the clone is still on the old version, upgrade the clone in
+    place, then wire replication (see the upgrade note at the end) &mdash; the same pattern AWS
+    Blue/Green Deployments use. If you'd rather not upgrade in place, a logical Replication Copy or
+    pg_dump seed streams across majors directly.
   </div>
 
   <div class="callout tip">

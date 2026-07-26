@@ -8,11 +8,12 @@
     <strong>exactly once</strong>.
   </p>
   <div class="callout warn">
-    <span class="callout-title">Same major version only</span>
-    A physical restore keeps the source's major version. You cannot seed, say, a PostgreSQL 17
-    target from a 16 snapshot this way. For a cross-version move use Replication Copy or pg_dump.
-    (To combine this fast seed <em>with</em> a major upgrade, capture the seed LSN first, then
-    upgrade the restored target &mdash; see the upgrade note at the end.)
+    <span class="callout-title">Version: the restore matches the source; upgrade after if needed</span>
+    A physical restore starts the green instance at the source's major version &mdash; it does not
+    itself change versions. To combine this fast seed <em>with</em> a major-version upgrade (e.g. land
+    on 17 from a 16 source), capture the seed LSN while green is still 16, upgrade green in place, then
+    wire replication (see the upgrade note at the end). If you'd rather not upgrade in place, a logical
+    Replication Copy or pg_dump seed streams across majors directly.
   </div>
 
   <div class="callout tip">
