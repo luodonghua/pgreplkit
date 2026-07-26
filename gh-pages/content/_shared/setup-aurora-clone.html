@@ -1,0 +1,99 @@
+<!-- SHARED SETUP: Aurora fast clone physical seed (Aurora -> Aurora, same major version). -->
+<div class="guide-section" id="setup">
+  <h2>Set up replication &mdash; Aurora Fast Clone</h2>
+  <p>
+    Aurora's fast cloning is copy-on-write against the shared cluster storage, so a clone is ready
+    in <strong>minutes regardless of data size</strong>. The clone preserves LSN continuity, so you
+    resume logical streaming from the clone's start position <strong>exactly once</strong>.
+  </p>
+  <div class="callout warn">
+    <span class="callout-title">Same major version only</span>
+    A clone is always the same major version as the source. For a cross-version move use Replication
+    Copy or pg_dump. (To combine the clone with a major upgrade, capture the seed LSN before
+    upgrading the clone &mdash; see the note at the end.)
+  </div>
+
+  <div data-diagram="physical-seed-aurora"></div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">1</span> Prepare the SOURCE: publication, then slot</div>
+    <div class="code-block"><span class="code-label">psql — on SOURCE writer (order matters)</span>
+<pre><code>CREATE PUBLICATION pub_app FOR TABLE customers, orders;
+-- (or FOR TABLES IN SCHEMA app;  on PG 15+)
+
+SELECT pg_create_logical_replication_slot('sub_app', 'pgoutput');</code></pre></div>
+    <div class="explain">Publication before slot, and slot before clone &mdash; so the clone contains
+      the slot and the source keeps all WAL after the slot's position.</div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">2</span> Fast-clone the cluster and add a writer</div>
+    <div class="code-block"><span class="code-label">bash — AWS CLI</span>
+<pre><code>aws rds restore-db-cluster-to-point-in-time \
+  --db-cluster-identifier green-clone \
+  --source-db-cluster-identifier blue-cluster \
+  --restore-type copy-on-write \
+  --use-latest-restorable-time \
+  --db-subnet-group-name my-subnet-group \
+  --vpc-security-group-ids sg-0123456789 \
+  --region us-east-1
+
+aws rds create-db-instance \
+  --db-cluster-identifier green-clone \
+  --db-instance-identifier green-clone-1 \
+  --db-instance-class db.r6g.large \
+  --engine aurora-postgresql \
+  --region us-east-1
+aws rds wait db-instance-available \
+  --db-instance-identifier green-clone-1 --region us-east-1</code></pre></div>
+    <div class="callout note">
+      <span class="callout-title">Networking</span>
+      The clone's writer must reach the source writer on 5432. Set the source writer's
+      <strong>private</strong> address as the subscription host and allow the VPC CIDR on the source
+      security group. Aurora public endpoints can hairpin to public IPs inside a VPC.
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">3</span> Capture the seed LSN on the CLONE</div>
+    <div class="code-block"><span class="code-label">psql — on the CLONE writer</span>
+<pre><code>SELECT aurora_volume_logical_start_lsn();
+--  aurora_volume_logical_start_lsn
+--  0/6188A58            &lt;- save this value
+</code></pre></div>
+    <div class="callout note">
+      <span class="callout-title">Aurora vs RDS function</span>
+      On Aurora use <code>aurora_volume_logical_start_lsn()</code>. The RDS function
+      <code>rds_tools.logical_seed_lsn()</code> does <strong>not</strong> exist on Aurora.
+      <code>aurora_volume_logical_start_lsn()</code> is available on Aurora PostgreSQL 16, 17 and 18.
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">4</span> Wire the subscription and advance the origin</div>
+    <div class="code-block"><span class="code-label">psql — on the CLONE writer</span>
+<pre><code>CREATE SUBSCRIPTION sub_app
+  CONNECTION 'host=SOURCE_WRITER_PRIVATE_IP port=5432 user=repluser password=SECRET dbname=appdb'
+  PUBLICATION pub_app
+  WITH (copy_data = false, create_slot = false, enabled = false, slot_name = 'sub_app');
+
+SELECT 'pg_' || oid AS origin FROM pg_subscription WHERE subname = 'sub_app';
+
+-- advance to the seed LSN from step 3 (the exactly-once boundary)
+SELECT pg_replication_origin_advance('pg_16417', '0/6188A58');
+
+ALTER SUBSCRIPTION sub_app ENABLE;</code></pre></div>
+    <div class="explain">Same idea as any physical seed: the origin advance says "I already hold
+      everything up to the clone point; stream only what came after," so the clone and the live
+      stream join with no gap and no duplicates.</div>
+  </div>
+
+  <div class="callout note">
+    <span class="callout-title">Combining with a major-version upgrade</span>
+    To also upgrade (e.g. 17 &rarr; 18): do steps 1&ndash;3 while the clone is still the old version
+    and <strong>save the seed LSN before upgrading</strong>. Then major-upgrade the clone, and only
+    afterwards run step 4. The seed LSN is on the source's timeline, so upgrading the clone doesn't
+    invalidate it. This is the same clone &rarr; upgrade &rarr; subscribe pattern AWS Blue/Green
+    Deployments use.
+  </div>
+</div>

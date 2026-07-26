@@ -1,0 +1,147 @@
+<!-- SPECIAL: Bi-directional (active-active) replication with origin=none. Verified on PG16. -->
+<div class="guide-section" id="overview">
+  <h2>Overview</h2>
+  <p>
+    Bi-directional (active-active) replication means <strong>two nodes each publish and subscribe to
+    the other</strong>, so a write on either node appears on both. Before PostgreSQL 16 this was
+    dangerous: a replicated row would be re-published and echo back and forth forever (a replication
+    loop). PostgreSQL 16 adds the subscription option <code>origin = none</code>, which tells a node
+    <em>"only send me changes that originated locally on your side, not rows you received from
+    someone else."</em> That single option makes safe two-node active-active possible with core
+    logical replication.
+  </p>
+
+  <div data-diagram="bidirectional"></div>
+
+  <div class="callout danger">
+    <span class="callout-title">Read this before you build active-active</span>
+    Active-active is powerful but shifts hard problems onto your application. Core logical replication
+    does <strong>not</strong> resolve conflicts: if the same primary key is inserted or updated on both
+    nodes, you get errors or divergence. It is a genuine fit only when writes are naturally partitioned
+    (each node owns distinct keys/regions) or you have an application-level conflict strategy. For a
+    one-way migration, do <em>not</em> use this &mdash; use a normal source&rarr;target scenario.
+  </div>
+</div>
+
+<div class="guide-section" id="prereqs">
+  <h2>Prerequisites</h2>
+  <ul>
+    <li><span class="version-badge">PostgreSQL 16+</span> on <strong>both</strong> nodes.
+      <code>origin = none</code> does not exist before 16. This is the hard requirement for
+      loop-safe active-active.</li>
+    <li><code>wal_level = logical</code> on both nodes (self-managed:
+      <code>postgresql.conf</code> + restart; RDS/Aurora: <code>rds.logical_replication = 1</code> in
+      the parameter group + reboot).</li>
+    <li><strong>Every replicated table needs a primary key</strong> (or explicit
+      <code>REPLICA IDENTITY</code>). This is doubly important here because it is also how you avoid
+      write conflicts.</li>
+    <li><strong>Identical schema on both nodes</strong> (logical replication doesn't copy DDL). Keep
+      schema changes coordinated for the life of the setup.</li>
+    <li>A <strong>conflict-avoidance design</strong>. The cleanest is non-overlapping key ranges &mdash;
+      e.g. node A uses odd IDs / one set of regions, node B uses even IDs / another. This is what the
+      example below uses.</li>
+    <li>Network reachability <strong>both ways</strong> on 5432: each node's subscriber must reach the
+      other node's publisher.</li>
+  </ul>
+  <div class="callout warn">
+    <span class="callout-title">Sequences will collide if shared</span>
+    If both nodes use the same sequence to generate IDs, they will both hand out <code>1, 2, 3, ...</code>
+    and immediately conflict. Use disjoint ranges: e.g. set different <code>START</code>/<code>INCREMENT</code>
+    per node (node A odd, node B even), or UUID keys.
+  </div>
+</div>
+
+<div class="guide-section" id="setup">
+  <h2>Set up active-active (origin = none)</h2>
+  <p>The two nodes are symmetric. Below, <strong>Node A</strong> and <strong>Node B</strong> are the
+     two servers; run each block on the node named in the label.</p>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">1</span> Create the schema on both nodes</div>
+    <p>Both nodes must have the same tables, each with a primary key.</p>
+    <div class="code-block"><span class="code-label">psql — run on BOTH Node A and Node B</span>
+<pre><code>CREATE TABLE items (
+  id   bigint PRIMARY KEY,
+  node text   NOT NULL,
+  note text
+);</code></pre></div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">2</span> Create a publication on each node</div>
+    <div class="code-block"><span class="code-label">psql — on NODE A</span>
+<pre><code>CREATE PUBLICATION pub_a FOR TABLE items;</code></pre></div>
+    <div class="code-block"><span class="code-label">psql — on NODE B</span>
+<pre><code>CREATE PUBLICATION pub_b FOR TABLE items;</code></pre></div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">3</span> Create a subscription on each node with <code>origin = none</code></div>
+    <p>Each node subscribes to the other. If both tables already hold data you must load it once out
+       of band and use <code>copy_data = false</code>; if starting empty (recommended), either value is
+       fine. Here both are empty, so we use <code>copy_data = false</code>.</p>
+    <div class="code-block"><span class="code-label">psql — on NODE A (subscribes to B)</span>
+<pre><code>CREATE SUBSCRIPTION sub_from_b
+  CONNECTION 'host=NODE_B_HOST port=5432 user=repluser password=SECRET dbname=appdb'
+  PUBLICATION pub_b
+  WITH (copy_data = false, origin = none);</code></pre></div>
+    <div class="code-block"><span class="code-label">psql — on NODE B (subscribes to A)</span>
+<pre><code>CREATE SUBSCRIPTION sub_from_a
+  CONNECTION 'host=NODE_A_HOST port=5432 user=repluser password=SECRET dbname=appdb'
+  PUBLICATION pub_a
+  WITH (copy_data = false, origin = none);</code></pre></div>
+    <div class="explain">
+      <code>origin = none</code> is the whole trick. When Node A receives a row from Node B and applies
+      it, that applied row has a non-local origin. Node A's publication would normally re-send it to B,
+      creating an endless loop. With <code>origin = none</code> on B's subscription, B ignores anything
+      that didn't originate on A &mdash; so replicated rows are never bounced back, and the loop is broken.
+    </div>
+  </div>
+
+  <div class="callout tip">
+    <span class="callout-title">Seeding an existing dataset once</span>
+    If one node already has data and the other is empty, load a one-time copy first (e.g. set
+    <code>copy_data = true</code> on <em>only one</em> of the two subscriptions, or seed with pg_dump),
+    then keep the other at <code>copy_data = false</code>. Never let both subscriptions copy the same
+    rows &mdash; that guarantees conflicts.
+  </div>
+</div>
+
+<div class="guide-section" id="verify">
+  <h2>Verify there is no loop</h2>
+  <p>Write to each node using its own key range, then confirm both converge and no row is duplicated
+     or ping-ponging.</p>
+  <div class="code-block"><span class="code-label">psql — write on each node (disjoint IDs)</span>
+<pre><code>-- on NODE A (odd ids)
+INSERT INTO items VALUES (1,'A','from-A'), (3,'A','from-A');
+-- on NODE B (even ids)
+INSERT INTO items VALUES (2,'B','from-B'), (4,'B','from-B');</code></pre></div>
+  <div class="code-block"><span class="code-label">psql — check on BOTH nodes (should be identical, 4 rows each)</span>
+<pre><code>SELECT id, node FROM items ORDER BY id;
+SELECT count(*) FROM items;   -- 4 on both nodes, and stays 4 (no loop growth)</code></pre></div>
+  <div class="callout note">
+    <span class="callout-title">What healthy looks like</span>
+    Both nodes show the same 4 rows and the count is stable. If the count kept climbing you'd have a
+    loop &mdash; which is exactly what <code>origin = none</code> prevents.
+  </div>
+</div>
+
+<div data-include="monitoring"></div>
+
+<div class="guide-section" id="operating">
+  <h2>Operating active-active safely</h2>
+  <ul>
+    <li><strong>Conflicts are your responsibility.</strong> Watch
+      <code>pg_stat_subscription_stats.apply_error_count</code> on both nodes. A rising count usually
+      means a key collision &mdash; the two sides wrote the same PK. Fix the data and, if the worker is
+      stuck, it will retry (or skip with <code>ALTER SUBSCRIPTION ... SKIP</code> for a known bad LSN).</li>
+    <li><strong>Schema changes must be coordinated.</strong> Apply the same DDL to both nodes; logical
+      replication does not carry DDL, and a mismatch breaks apply.</li>
+    <li><strong>Sequences.</strong> Keep ID generation disjoint per node (odd/even increments or UUIDs)
+      so the two sides never generate the same key.</li>
+    <li><strong>This is two-node only.</strong> Core <code>origin = none</code> handles a pair cleanly.
+      Meshes of three or more nodes are far more complex and are out of scope here.</li>
+  </ul>
+</div>
+
+<div data-include="troubleshooting"></div>

@@ -1,0 +1,98 @@
+<!-- SHARED SETUP: replication-copy (built-in COPY). Verified on PostgreSQL 16. -->
+<div class="guide-section" id="setup">
+  <h2>Set up replication &mdash; Replication Copy</h2>
+  <p>
+    This uses PostgreSQL's built-in initial copy: you create a <em>publication</em> on the source
+    and a <em>subscription</em> on the target with <code>copy_data = true</code>. PostgreSQL loads
+    all existing rows, then automatically switches to streaming live changes. It is
+    <strong>version-independent</strong> (works across major versions) and works on every platform.
+  </p>
+
+  <div data-diagram="logical-copy"></div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">1</span> Create the publication on the SOURCE</div>
+    <p>The publication declares which tables to send.</p>
+
+    <h4>If you chose "Specific tables"</h4>
+    <div class="code-block"><span class="code-label">psql — on SOURCE</span>
+<pre><code>CREATE PUBLICATION pub_app
+  FOR TABLE customers, orders
+  WITH (publish = 'insert, update, delete, truncate');</code></pre></div>
+
+    <h4>If you chose "Entire schemas" (PostgreSQL 15+)</h4>
+    <div class="code-block"><span class="code-label">psql — on SOURCE (PG 15+)</span>
+<pre><code>CREATE PUBLICATION pub_app
+  FOR TABLES IN SCHEMA app
+  WITH (publish = 'insert, update, delete, truncate');</code></pre></div>
+
+    <h4>Multiple schemas, and mixing schemas with individual tables</h4>
+    <p>List several schemas separated by commas, and&mdash;on PG 15+&mdash;you can combine whole
+       schemas with specific extra tables in the same publication:</p>
+    <div class="code-block"><span class="code-label">psql — on SOURCE (PG 15+)</span>
+<pre><code>-- several whole schemas at once
+CREATE PUBLICATION pub_app
+  FOR TABLES IN SCHEMA app, sales, inventory;
+
+-- whole schemas PLUS one extra table from another schema
+CREATE PUBLICATION pub_app
+  FOR TABLES IN SCHEMA app, sales,
+      TABLE public.audit_log;</code></pre></div>
+
+    <h4>Can I publish a whole schema but exclude a few tables?</h4>
+    <div class="callout note">
+      <span class="callout-title">There is no "exclude" clause</span>
+      PostgreSQL has no <code>FOR TABLES IN SCHEMA app EXCEPT ...</code>. A schema publication always
+      includes <em>every</em> current and future table in that schema. To publish most of a schema but
+      omit a few tables, publish the tables you <strong>do</strong> want explicitly with
+      <code>FOR TABLE</code>. This query builds that list for you (all tables in <code>app</code>
+      except the ones you name):
+    </div>
+    <div class="code-block"><span class="code-label">psql — on SOURCE: generate the FOR TABLE list</span>
+<pre><code>SELECT string_agg(format('%I.%I', schemaname, tablename), ', ' ORDER BY tablename)
+FROM pg_tables
+WHERE schemaname = 'app'
+  AND tablename NOT IN ('temp_scratch', 'audit_big');   -- tables to EXCLUDE
+-- copy the output into:
+--   CREATE PUBLICATION pub_app FOR TABLE &lt;paste list here&gt;;</code></pre></div>
+    <div class="explain">Because a schema publication auto-includes future tables too, an explicit
+      <code>FOR TABLE</code> list is also what you want when you must be certain a specific table is
+      <em>never</em> replicated &mdash; new tables won't sneak in.</div>
+
+    <div class="callout note">
+      <span class="callout-title">On PostgreSQL 10&ndash;14</span>
+      <code>FOR TABLES IN SCHEMA</code> does not exist. List the tables explicitly with
+      <code>FOR TABLE ...</code>, or publish everything with <code>FOR ALL TABLES</code>.
+    </div>
+    <div class="explain">A publication is just metadata &mdash; it defines <em>what</em> is available to
+      subscribers. It does not move any data by itself.</div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">2</span> Create the subscription on the TARGET</div>
+    <p>The subscription connects back to the source, creates a replication slot there, copies the
+       existing rows, then streams changes.</p>
+    <div class="code-block"><span class="code-label">psql — on TARGET, inside the replicated database</span>
+<pre><code>CREATE SUBSCRIPTION sub_app
+  CONNECTION 'host=SOURCE_HOST port=5432 user=repluser password=SECRET dbname=appdb'
+  PUBLICATION pub_app
+  WITH (
+    copy_data    = true,     -- load existing rows first
+    create_slot  = true,     -- create the slot on the source
+    enabled      = true,     -- start immediately
+    slot_name    = 'sub_app',
+    disable_on_error = true   -- pause instead of retry-looping on a data error
+  );</code></pre></div>
+    <div class="explain">Because <code>copy_data = true</code>, PostgreSQL takes a consistent snapshot
+      on the source, copies every existing row, and remembers the exact point to resume streaming
+      from &mdash; so nothing is missed and nothing is applied twice.</div>
+  </div>
+
+  <div class="callout warn">
+    <span class="callout-title">Very large tables</span>
+    The initial copy reads the whole table under one snapshot and can take a long time on big data,
+    keeping WAL on the source while it runs. If that is a concern and both sides are the same
+    platform + major version, use a physical seed (RDS snapshot / Aurora clone) instead. Otherwise
+    the pg_dump method lets you parallelize the load.
+  </div>
+</div>

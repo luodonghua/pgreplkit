@@ -1,0 +1,32 @@
+<!-- PAIR: self-managed PostgreSQL -> Amazon RDS for PostgreSQL -->
+<div class="guide-section" data-role="intro">
+  <h2>Overview</h2>
+  <p>
+    You are moving from a <strong>self-managed PostgreSQL</strong> server (on-prem, EC2, or a VM)
+    to <strong>Amazon RDS for PostgreSQL</strong>, using logical replication so the cutover downtime
+    is only the final drain-and-switch. Logical replication works across major versions, so this is
+    also the recommended path for a version upgrade at the same time.
+  </p>
+  <div class="callout note">
+    <span class="callout-title">Direction of the connection</span>
+    RDS (the subscriber) makes an <strong>outbound</strong> connection to your self-managed server
+    (the publisher) on port 5432. Your firewall / security group and the source's
+    <code>pg_hba.conf</code> must allow the RDS instance's address. If RDS is in a private subnet,
+    it reaches your data center over VPN or Direct Connect.
+  </div>
+  <div class="callout warn">
+    <span class="callout-title">Physical seeds don't apply here</span>
+    RDS Snapshot Restore and Aurora Fast Clone only work when both sides are the same AWS engine.
+    From self-managed, use <strong>Replication Copy</strong> (simplest) or a <strong>pg_dump</strong>
+    seed (for large data / parallel load).
+  </div>
+</div>
+
+<div data-include="prerequisites-common"></div>
+
+<div data-sync="replication-copy"><div data-include="setup-replication-copy"></div></div>
+<div data-sync="pg-dump"><div data-include="setup-pg-dump"></div></div>
+
+<div data-include="monitoring"></div>
+<div data-include="cutover"></div>
+<div data-include="troubleshooting"></div>

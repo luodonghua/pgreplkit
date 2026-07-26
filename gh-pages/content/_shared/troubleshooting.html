@@ -1,0 +1,158 @@
+<!-- SHARED: troubleshooting.html -->
+<div class="guide-section" id="troubleshooting">
+  <h2>Troubleshooting</h2>
+  <p>The most common problems, what causes them, and how to fix them.</p>
+
+  <h3>Subscription is created but no data arrives</h3>
+  <ul>
+    <li><strong>Check connectivity first.</strong> The <em>subscriber</em> makes an outbound
+      connection to the <em>publisher</em> on port 5432. From the target host:
+      <div class="code-block"><span class="code-label">bash — from the TARGET host</span>
+<pre><code>psql "host=SOURCE_HOST port=5432 user=repluser dbname=appdb" -c "select 1"</code></pre></div>
+      If this fails, it is a network/firewall/security-group or <code>pg_hba.conf</code> issue,
+      not a replication issue.</li>
+    <li><strong>Confirm the subscription is enabled:</strong>
+      <div class="code-block"><span class="code-label">psql — on TARGET</span>
+<pre><code>SELECT subname, subenabled FROM pg_subscription;
+-- if subenabled = f:
+ALTER SUBSCRIPTION sub_app ENABLE;</code></pre></div></li>
+    <li><strong>Look at the target server log.</strong> The logical apply worker writes the real
+      reason there (permission denied, publication missing, connection refused).</li>
+  </ul>
+
+  <h3>Error: "cannot update/delete table … does not have a replica identity and publishes updates"</h3>
+  <div class="callout danger">
+    <span class="callout-title">This fires on the SOURCE and blocks your application</span>
+    A table is part of a publication that publishes updates/deletes but has no primary key or
+    <code>REPLICA IDENTITY</code>. The publisher refuses the UPDATE/DELETE outright &mdash; this is a
+    live-application outage, not just a replication issue. Fix it by giving the table an identity:
+    <div class="code-block"><span class="code-label">psql — on SOURCE</span>
+<pre><code>ALTER TABLE my_table REPLICA IDENTITY USING INDEX my_unique_idx;  -- preferred
+-- or, if there is no suitable unique index:
+ALTER TABLE my_table REPLICA IDENTITY FULL;</code></pre></div>
+    Run the row-identity pre-flight query (in Prerequisites) to find every such table before you start.
+  </div>
+
+  <h3>Error: "logical replication target relation … is missing replicated column"</h3>
+  <p>
+    The target table exists but lacks a column the publisher is sending. The target schema must be a
+    <strong>superset</strong> of the published columns. Add the missing column on the target to match
+    the source, then the apply worker resumes on its next retry. This is why you pre-create the target
+    schema from the source with <code>pg_dump --schema-only</code> and keep DDL in sync.
+  </p>
+
+  <h3>Error: "cannot add relation … to publication"</h3>
+  <p>
+    You tried to publish something that isn't an ordinary or partitioned table &mdash; an unlogged
+    table, temporary table, view, materialized view, foreign table, or system table. None of these can
+    be replicated. Remove it from the publication; for unlogged tables that must move, convert with
+    <code>ALTER TABLE … SET LOGGED</code> first.
+  </p>
+
+  <h3>Error: "publication does not exist"</h3>
+  <p>
+    The subscription was created (or the slot started replaying) before the publication existed
+    on the source. Always create the <strong>publication first, then the slot/subscription</strong>.
+    Create the missing publication on the source and the worker will recover on its next retry.
+  </p>
+
+  <h3>Duplicate key / unique constraint violations on the target</h3>
+  <div class="callout danger">
+    <span class="callout-title">Almost always a seeding mistake</span>
+    This means rows that were already loaded into the target are being replayed again by the
+    stream. It happens when a manual (pg_dump) seed was <em>not</em> taken at the slot's exported
+    snapshot, so the slot replays WAL from before your dump. Re-seed using the exported-snapshot
+    procedure (dump exactly at the slot's snapshot, then subscribe with <code>copy_data = false</code>).
+  </div>
+
+  <h3>Error: "could not create replication slot ... all slots are in use"</h3>
+  <p>
+    Raise <code>max_replication_slots</code> and <code>max_wal_senders</code> on the source (and
+    <code>max_logical_replication_workers</code> / <code>max_worker_processes</code> on the target),
+    then restart. Each subscription needs one slot and at least one worker.
+  </p>
+
+  <h3>Replication was fine, then broke with <code>wal_status = lost</code></h3>
+  <p>
+    The source recycled WAL the target still needed (target fell too far behind, or a bounded
+    <code>max_slot_wal_keep_size</code> was too small). There is no way to resume &mdash; drop the
+    subscription and slot and re-seed. Prevent it by keeping the target caught up and monitoring lag.
+  </p>
+
+  <h3>Row counts don't match after the copy</h3>
+  <ul>
+    <li>Tables without a <strong>primary key or REPLICA IDENTITY</strong> cannot replicate
+      <code>UPDATE</code>/<code>DELETE</code>. Add a PK, or set
+      <code>ALTER TABLE t REPLICA IDENTITY FULL;</code> before starting.</li>
+    <li>The target schema was created <em>after</em> the publication started, so some tables were
+      never added. Re-run <code>ALTER SUBSCRIPTION ... REFRESH PUBLICATION;</code> on the target.</li>
+    <li><strong>Sequences</strong> are never replicated &mdash; their values will differ until you
+      sync them at cutover (see the cutover step).</li>
+  </ul>
+
+  <h3>Large initial copy is slow or stalls the source</h3>
+  <p>
+    The built-in copy holds a read on the source. For very large datasets prefer a physical seed
+    (RDS snapshot restore or Aurora fast clone) when source and target are the same platform and
+    major version, or a parallel <code>pg_dump</code> seed with the exported-snapshot procedure.
+  </p>
+
+  <div class="callout note">
+    <span class="callout-title">General debugging order</span>
+    1) target server log &rarr; 2) <code>pg_stat_subscription_stats.apply_error_count</code> &rarr;
+    3) network test from the target &rarr; 4) publication/slot existence on the source. That order
+    finds the cause fastest.
+  </div>
+
+  <h3>Error reference: cause and fix</h3>
+  <p>Common errors the PostgreSQL server raises, mapped to what causes them and how to avoid them.
+     The ones marked <span class="tag">verified</span> were reproduced on PostgreSQL 16.</p>
+  <table class="data-table">
+    <thead><tr><th>Error (paraphrased)</th><th>When</th><th>Cause &amp; how to prevent it</th></tr></thead>
+    <tbody>
+      <tr><td><code>cannot update/delete table … does not have a replica identity and publishes updates</code> <span class="tag">verified</span></td>
+          <td>App write on SOURCE</td>
+          <td>Table is in a publication but has no PK/replica identity. Run the row-identity pre-flight
+              and set a PK or <code>REPLICA IDENTITY</code> <em>before</em> creating the publication.</td></tr>
+      <tr><td><code>cannot add relation … to publication</code> (unlogged/temp/system/view) <span class="tag">verified</span></td>
+          <td>CREATE/ALTER PUBLICATION</td>
+          <td>Only ordinary + partitioned tables can be published. Don't include unlogged, temporary,
+              system, view, materialized-view or foreign-table objects.</td></tr>
+      <tr><td><code>cannot use column list … in publications containing FOR TABLES IN SCHEMA</code> <span class="tag">verified</span></td>
+          <td>CREATE/ALTER PUBLICATION</td>
+          <td>You can't mix a per-table column list with a whole-schema publication. Use one approach:
+              schema-level, or explicit tables with column lists.</td></tr>
+      <tr><td><code>logical decoding must be enabled to publish logical changes</code> / <code>wal_level is insufficient</code></td>
+          <td>CREATE SUBSCRIPTION / slot</td>
+          <td><code>wal_level</code> not <code>logical</code> on the source (or
+              <code>rds.logical_replication</code> not set). See the configuration parameters in
+              Prerequisites; a restart is required.</td></tr>
+      <tr><td><code>logical replication target relation "…" does not exist</code></td>
+          <td>Apply on SUBSCRIBER</td>
+          <td>Target table/schema missing. Pre-create the schema; re-run
+              <code>ALTER SUBSCRIPTION … REFRESH PUBLICATION</code> if you added tables later.</td></tr>
+      <tr><td><code>… is missing replicated column: …</code></td>
+          <td>Apply on SUBSCRIBER</td>
+          <td>The target table lacks a column the publisher sends. Keep the target schema a superset of
+              the published columns.</td></tr>
+      <tr><td><code>… has incompatible generated column: …</code></td>
+          <td>Apply on SUBSCRIBER</td>
+          <td>A column is stored/normal on the publisher but a generated column on the subscriber (or
+              vice versa). Make the column definitions match.</td></tr>
+      <tr><td><code>publisher did not send replica identity column expected by … target relation</code></td>
+          <td>Apply on SUBSCRIBER</td>
+          <td>The publisher's replica identity doesn't cover what the subscriber needs. Align replica
+              identity (and, if you use a column list, include the identity columns).</td></tr>
+      <tr><td><code>cannot use relation "…" as logical replication target</code></td>
+          <td>Apply on SUBSCRIBER</td>
+          <td>The target object is not a plain/partitioned table. Only tables can be subscription
+              targets.</td></tr>
+    </tbody>
+  </table>
+  <div class="callout note">
+    <span class="callout-title">The single most important habit</span>
+    Run the row-identity pre-flight on the source, and make the target schema an exact superset of the
+    published tables/columns, <em>before</em> creating the publication and subscription. Those two
+    habits prevent the large majority of the errors in this table.
+  </div>
+</div>

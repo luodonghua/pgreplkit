@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PostgreSQL Logical Replication Setup Guide</title>
+  <meta name="description" content="Interactive, step-by-step guide for setting up PostgreSQL logical replication across self-managed, RDS, Aurora, Cloud SQL, AlloyDB and Azure environments.">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container">
+      <h1>PostgreSQL Logical Replication Guide</h1>
+      <p class="subtitle">
+        Pick your source, target, and initial-sync method. You'll get a tailored,
+        copy-paste runbook &mdash; prerequisites, setup, monitoring, and troubleshooting &mdash;
+        with diagrams and plain-language explanations for every step.
+      </p>
+      <nav class="header-nav">
+        <a href="#builder">Scenario Builder</a>
+        <a href="#featured">Featured Scenarios</a>
+        <a href="#about">About</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- ============================ SCENARIO BUILDER ============================ -->
+    <section id="builder" class="card">
+      <h2>Build Your Scenario</h2>
+      <p class="help-text">
+        Choose each option below. Combinations that aren't valid (for example, an Aurora
+        Fast Clone from an RDS source) are disabled automatically, with an explanation.
+      </p>
+
+      <div class="selector-grid">
+        <div class="selector-group">
+          <label for="source-select">1. Source database</label>
+          <span class="field-hint">Where the data currently lives (the publisher).</span>
+          <select id="source-select" aria-label="Source database"></select>
+        </div>
+
+        <div class="selector-group">
+          <label for="target-select">2. Target database</label>
+          <span class="field-hint">Where you are migrating to (the subscriber).</span>
+          <select id="target-select" aria-label="Target database"></select>
+        </div>
+
+        <div class="selector-group">
+          <label for="sync-select">3. Initial data sync method</label>
+          <span class="field-hint">How the existing data is first loaded.</span>
+          <select id="sync-select" aria-label="Initial data sync method"></select>
+        </div>
+
+        <div class="selector-group">
+          <label for="scope-select">4. What to replicate</label>
+          <span class="field-hint">Whole schemas, or a specific list of tables.</span>
+          <select id="scope-select" aria-label="What to replicate"></select>
+        </div>
+      </div>
+
+      <div id="validation-message" class="validation-message hidden" role="status"></div>
+      <div id="method-hint" class="callout note hidden"></div>
+
+      <button id="generate-btn" class="btn-primary" disabled>Show My Guide</button>
+    </section>
+
+    <!-- ============================ FEATURED SCENARIOS ============================ -->
+    <section id="featured" class="card">
+      <h2>Featured Scenarios</h2>
+      <p class="help-text">Jump straight to a common path, or the advanced bi-directional setup.</p>
+      <div id="featured-grid" class="scenario-preview-grid"></div>
+    </section>
+
+    <!-- ============================ ABOUT ============================ -->
+    <section id="about" class="card">
+      <h2>About This Guide</h2>
+      <p>
+        This is a <strong>manual setup guide</strong>. Every scenario gives you the exact SQL
+        and shell commands to run by hand, so you understand and control each step. It does not
+        require any tool to be installed against your databases.
+      </p>
+      <p>
+        It is a companion to <a href="https://github.com/donghua/pgreplkit" target="_blank" rel="noopener">pgreplkit</a>,
+        which automates these same workflows (slot planning, exactly-once physical seeds,
+        validation gates, reverse replication) when you'd rather not run the steps yourself.
+      </p>
+      <div class="callout note">
+        <span class="callout-title">New to logical replication?</span>
+        Logical replication streams row-level changes from a <em>publisher</em> to a
+        <em>subscriber</em> using a <em>publication</em> (what to send) and a
+        <em>subscription</em> (what to receive). Unlike physical/streaming replication, it works
+        across different major versions and different platforms &mdash; which is why it's the
+        backbone of near-zero-downtime migrations and upgrades.
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container">
+      <p>PostgreSQL Logical Replication Guide &mdash; a companion to
+        <a href="https://github.com/donghua/pgreplkit" target="_blank" rel="noopener">pgreplkit</a>.</p>
+      <p class="disclaimer">
+        For manual setup. Always test in a non-production environment first. Command examples
+        use placeholders (SOURCE, TARGET, appdb) &mdash; substitute your own values.
+      </p>
+    </div>
+  </footer>
+
+  <script src="js/scenarios.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

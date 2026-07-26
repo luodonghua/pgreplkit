@@ -1,0 +1,48 @@
+<!-- PAIR: Azure Database for PostgreSQL (Flexible Server) -> Amazon Aurora PostgreSQL -->
+<div class="guide-section" data-role="intro">
+  <h2>Overview</h2>
+  <p>
+    You are migrating from <strong>Azure Database for PostgreSQL &ndash; Flexible Server</strong> to
+    <strong>Amazon Aurora PostgreSQL</strong> &mdash; a cross-cloud move. Use logical replication:
+    <strong>Replication Copy</strong> or a <strong>pg_dump</strong> seed.
+  </p>
+  <div class="callout note">
+    <span class="callout-title">This guide covers Flexible Server only</span>
+    Not the retired Single Server, nor Cosmos DB for PostgreSQL (Citus). On Single Server, move to
+    Flexible Server (or dump/restore) first, then replicate.
+  </div>
+
+  <div data-diagram="cross-cloud" data-src-cloud="Azure (Flexible Server)" data-src="Azure PostgreSQL" data-tgt="Amazon Aurora"></div>
+
+  <div class="callout note">
+    <span class="callout-title">Enable logical replication on Azure (the source)</span>
+    Set <code>wal_level = logical</code> (and adequate <code>max_replication_slots</code> /
+    <code>max_wal_senders</code>), then restart. Use <code>azure_pg_admin</code> and grant
+    <code>REPLICATION</code> to the migration user.
+    <div class="code-block"><span class="code-label">bash — az CLI</span>
+<pre><code>az postgres flexible-server parameter set \
+  --resource-group MY_RG --server-name MY_AZ_SERVER \
+  --name wal_level --value logical
+az postgres flexible-server restart \
+  --resource-group MY_RG --name MY_AZ_SERVER
+#   SHOW wal_level;   -- expect: logical</code></pre></div>
+  </div>
+
+  <div class="callout warn">
+    <span class="callout-title">Cross-cloud networking</span>
+    Azure Flexible Server is the <strong>publisher</strong>; the Aurora writer (subscriber) connects
+    outbound to it on 5432. Public access + Azure firewall rules (SSL), or a site-to-site
+    <strong>VPN</strong>. Verify from the Aurora VPC first:
+    <div class="code-block"><span class="code-label">bash — from the Aurora VPC</span>
+<pre><code>psql "host=MY_AZ_SERVER.postgres.database.azure.com port=5432 user=repluser dbname=appdb sslmode=require" -c "select 1"</code></pre></div>
+  </div>
+</div>
+
+<div data-include="prerequisites-common"></div>
+
+<div data-sync="replication-copy"><div data-include="setup-replication-copy"></div></div>
+<div data-sync="pg-dump"><div data-include="setup-pg-dump"></div></div>
+
+<div data-include="monitoring"></div>
+<div data-include="cutover"></div>
+<div data-include="troubleshooting"></div>

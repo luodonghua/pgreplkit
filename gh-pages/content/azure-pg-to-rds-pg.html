@@ -1,0 +1,52 @@
+<!-- PAIR: Azure Database for PostgreSQL (Flexible Server) -> Amazon RDS for PostgreSQL -->
+<div class="guide-section" data-role="intro">
+  <h2>Overview</h2>
+  <p>
+    You are migrating from <strong>Azure Database for PostgreSQL &ndash; Flexible Server</strong> to
+    <strong>Amazon RDS for PostgreSQL</strong> &mdash; a cross-cloud move. Flexible Server supports
+    native logical replication, so use <strong>Replication Copy</strong> or a
+    <strong>pg_dump</strong> seed. Provider-specific physical seeds do not apply.
+  </p>
+  <div class="callout note">
+    <span class="callout-title">This guide covers Flexible Server only</span>
+    It does not cover the retired <em>Single Server</em> offering or the distributed
+    <em>Cosmos DB for PostgreSQL</em> (Citus). If you are on Single Server, migrate to Flexible Server
+    (or dump/restore) first, then replicate.
+  </div>
+
+  <div data-diagram="cross-cloud" data-src-cloud="Azure (Flexible Server)" data-src="Azure PostgreSQL" data-tgt="Amazon RDS"></div>
+
+  <div class="callout note">
+    <span class="callout-title">Enable logical replication on Azure (the source)</span>
+    On Flexible Server set the server parameter <code>wal_level = logical</code> and ensure
+    <code>max_replication_slots</code> and <code>max_wal_senders</code> are large enough, then
+    <strong>restart</strong> the server. Use the <code>azure_pg_admin</code> role and grant
+    <code>REPLICATION</code> to the migration user (Flexible Server has no classic superuser).
+    <div class="code-block"><span class="code-label">bash — az CLI</span>
+<pre><code>az postgres flexible-server parameter set \
+  --resource-group MY_RG --server-name MY_AZ_SERVER \
+  --name wal_level --value logical
+# then restart:
+az postgres flexible-server restart \
+  --resource-group MY_RG --name MY_AZ_SERVER
+#   SHOW wal_level;   -- expect: logical</code></pre></div>
+  </div>
+
+  <div class="callout warn">
+    <span class="callout-title">Cross-cloud networking</span>
+    Azure Flexible Server is the <strong>publisher</strong>; the RDS subscriber connects outbound to
+    it on 5432. Use public access + Azure firewall rules (with SSL), or a site-to-site
+    <strong>VPN</strong> for private access. Verify reachability from the RDS side first:
+    <div class="code-block"><span class="code-label">bash — from the RDS VPC</span>
+<pre><code>psql "host=MY_AZ_SERVER.postgres.database.azure.com port=5432 user=repluser dbname=appdb sslmode=require" -c "select 1"</code></pre></div>
+  </div>
+</div>
+
+<div data-include="prerequisites-common"></div>
+
+<div data-sync="replication-copy"><div data-include="setup-replication-copy"></div></div>
+<div data-sync="pg-dump"><div data-include="setup-pg-dump"></div></div>
+
+<div data-include="monitoring"></div>
+<div data-include="cutover"></div>
+<div data-include="troubleshooting"></div>

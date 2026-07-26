@@ -1,0 +1,94 @@
+<!-- SHARED SETUP: pg-dump manual seed with exported snapshot. Verified on PostgreSQL 16. -->
+<div class="guide-section" id="setup">
+  <h2>Set up replication &mdash; pg_dump / pg_restore seed</h2>
+  <p>
+    Here you load the existing data yourself with <code>pg_dump</code>/<code>pg_restore</code>
+    (which you can parallelize and tune), then attach logical replication with
+    <code>copy_data = false</code> so it only streams changes. This is version-independent and
+    works on every platform.
+  </p>
+
+  <div class="callout danger">
+    <span class="callout-title">The one rule that makes this exactly-once</span>
+    You must take the dump at the <strong>exact point in time</strong> that the replication slot
+    starts from. If you dump at any other moment, the stream will either miss rows (dump too early)
+    or re-apply rows already in the dump, causing <strong>duplicate-key errors</strong> (dump too
+    late). PostgreSQL gives you that exact point as an <em>exported snapshot</em> when you create
+    the slot &mdash; use it with <code>pg_dump --snapshot</code>.
+  </div>
+
+  <div data-diagram="pgdump-seed"></div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">1</span> Create the publication on the SOURCE</div>
+    <div class="code-block"><span class="code-label">psql — on SOURCE</span>
+<pre><code>-- specific tables:
+CREATE PUBLICATION pub_app FOR TABLE customers, orders;
+-- or entire schema (PG 15+):
+-- CREATE PUBLICATION pub_app FOR TABLES IN SCHEMA app;</code></pre></div>
+    <div class="explain">Create the publication <em>before</em> the slot. The slot replays from its
+      start point, and the publication must already exist at that point or the apply worker fails
+      with "publication does not exist".</div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">2</span> Create the slot and capture its exported snapshot</div>
+    <p>Open a special <em>replication</em> connection and create the logical slot with
+       <code>EXPORT_SNAPSHOT</code>. It returns a snapshot name. <strong>Keep this session open</strong>
+       &mdash; the snapshot is only valid while the session that created it is alive.</p>
+    <div class="code-block"><span class="code-label">psql — on SOURCE, replication connection (leave open!)</span>
+<pre><code>psql "host=SOURCE_HOST port=5432 user=repluser dbname=appdb replication=database"
+
+-- inside that session:
+CREATE_REPLICATION_SLOT sub_app LOGICAL pgoutput EXPORT_SNAPSHOT;
+--  slot_name | consistent_point | snapshot_name       | output_plugin
+--  sub_app   | 0/1D6C6B8        | 00000004-0000009F-1 | pgoutput
+-- ^ note the snapshot_name. DO NOT close this psql yet.</code></pre></div>
+    <div class="explain">Creating the slot fixes the resume point on the source's timeline and pins
+      the WAL from there so nothing after it is lost. The exported snapshot is that same instant,
+      expressed as something <code>pg_dump</code> can read from.</div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">3</span> Dump at the snapshot and restore to the TARGET</div>
+    <p>In a <em>second</em> terminal, dump using <code>--snapshot</code> with the name from step 2,
+       then restore into the target. The session from step 2 must stay open for the whole dump.</p>
+    <div class="code-block"><span class="code-label">bash — second terminal</span>
+<pre><code>SNAP='00000004-0000009F-1'   # from step 2
+
+# schema + data, exactly at the slot's start point
+pg_dump "host=SOURCE_HOST port=5432 user=repluser dbname=appdb" \
+        --snapshot="$SNAP" -Fc -f appdb.dump
+
+# restore into the target (create the DB/roles first if needed)
+pg_restore -d "host=TARGET_HOST port=5432 user=repluser dbname=appdb" \
+        --no-owner --jobs=4 appdb.dump</code></pre></div>
+    <p class="help-text"><code>--jobs=4</code> restores several tables in parallel. Tune to your
+       target's CPU/IO.</p>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">4</span> Close the replication session</div>
+    <p>Once the dump has finished reading, you can close the psql session from step 2 (type
+       <code>\q</code>). The snapshot is no longer needed; the slot remains.</p>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">5</span> Attach the subscription (no copy) on the TARGET</div>
+    <p>Create the subscription reusing the slot you already made, with <code>copy_data = false</code>
+       and <code>create_slot = false</code>. It streams changes from exactly where the dump ended.</p>
+    <div class="code-block"><span class="code-label">psql — on TARGET</span>
+<pre><code>CREATE SUBSCRIPTION sub_app
+  CONNECTION 'host=SOURCE_HOST port=5432 user=repluser password=SECRET dbname=appdb'
+  PUBLICATION pub_app
+  WITH (
+    copy_data    = false,   -- data is already loaded by pg_restore
+    create_slot  = false,   -- reuse the slot from step 2
+    enabled      = true,
+    slot_name    = 'sub_app'
+  );</code></pre></div>
+    <div class="explain">Because the dump was taken at the slot's snapshot, the first change the
+      stream applies is the very next one after the dump &mdash; no gap, no overlap. This is the
+      exactly-once boundary.</div>
+  </div>
+</div>

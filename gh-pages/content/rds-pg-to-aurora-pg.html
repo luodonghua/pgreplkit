@@ -1,0 +1,36 @@
+<!-- PAIR: Amazon RDS for PostgreSQL -> Amazon Aurora PostgreSQL -->
+<div class="guide-section" data-role="intro">
+  <h2>Overview</h2>
+  <p>
+    You are moving from <strong>Amazon RDS for PostgreSQL</strong> to
+    <strong>Amazon Aurora PostgreSQL</strong>. Although both are AWS-managed, they are
+    <em>different engines</em>, so the physical seeds (RDS snapshot restore, Aurora fast clone) do
+    <strong>not</strong> apply across them &mdash; a snapshot can't restore across the RDS/Aurora
+    boundary. Use logical replication: <strong>Replication Copy</strong> or a <strong>pg_dump</strong>
+    seed.
+  </p>
+  <div class="callout note">
+    <span class="callout-title">Enable logical WAL on the source (RDS)</span>
+    Set <code>rds.logical_replication = 1</code> in the source RDS DB <strong>parameter group</strong>
+    (static &rarr; reboot). Confirm with <code>SHOW rds.logical_replication;</code>.
+  </div>
+  <div class="callout note">
+    <span class="callout-title">Networking</span>
+    The Aurora writer (subscriber) connects to the RDS instance (publisher) on 5432. Same VPC,
+    private address, and allow the VPC CIDR on the RDS security group.
+  </div>
+  <div class="callout tip">
+    <span class="callout-title">Good news: version-independent</span>
+    Because this path is logical, it streams across major versions &mdash; you can land on a newer
+    Aurora major version than the RDS source in the same migration.
+  </div>
+</div>
+
+<div data-include="prerequisites-common"></div>
+
+<div data-sync="replication-copy"><div data-include="setup-replication-copy"></div></div>
+<div data-sync="pg-dump"><div data-include="setup-pg-dump"></div></div>
+
+<div data-include="monitoring"></div>
+<div data-include="cutover"></div>
+<div data-include="troubleshooting"></div>

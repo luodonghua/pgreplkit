@@ -1,0 +1,39 @@
+<!-- PAIR: Amazon RDS for PostgreSQL -> Amazon RDS for PostgreSQL -->
+<div class="guide-section" data-role="intro">
+  <h2>Overview</h2>
+  <p>
+    Both sides are <strong>Amazon RDS for PostgreSQL</strong>. Because they share a platform, you get
+    an extra, very fast option: seed the target with an <strong>RDS snapshot restore</strong> (which
+    preserves LSN continuity) and resume logical streaming from the exact seed point. For smaller
+    databases, plain <strong>Replication Copy</strong> is simpler; <strong>pg_dump</strong> sits in
+    between for parallel logical loads.
+  </p>
+  <div class="callout note">
+    <span class="callout-title">Enable logical WAL on the source</span>
+    Set <code>rds.logical_replication = 1</code> in the source DB <strong>parameter group</strong>.
+    It is a static parameter, so the instance must be <strong>rebooted</strong> for it to take effect.
+    Confirm with <code>SHOW rds.logical_replication;</code> (should return <code>on</code>).
+  </div>
+  <div class="callout note">
+    <span class="callout-title">Networking</span>
+    The target instance (subscriber) connects to the source (publisher) on 5432. Keep both in the
+    same VPC where possible, connect to the source's <strong>private</strong> address, and allow the
+    VPC CIDR on the source security group.
+  </div>
+  <div class="callout warn">
+    <span class="callout-title">Snapshot seed = same major version</span>
+    RDS Snapshot Restore keeps the source's major version. For a cross-version move, use Replication
+    Copy or pg_dump. To upgrade <em>and</em> use the fast seed, capture the seed LSN before upgrading
+    the restored target (see the note in the snapshot setup).
+  </div>
+</div>
+
+<div data-include="prerequisites-common"></div>
+
+<div data-sync="replication-copy"><div data-include="setup-replication-copy"></div></div>
+<div data-sync="pg-dump"><div data-include="setup-pg-dump"></div></div>
+<div data-sync="rds-snapshot"><div data-include="setup-rds-snapshot"></div></div>
+
+<div data-include="monitoring"></div>
+<div data-include="cutover"></div>
+<div data-include="troubleshooting"></div>

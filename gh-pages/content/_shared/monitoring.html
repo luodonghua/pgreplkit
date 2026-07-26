@@ -1,0 +1,68 @@
+<!-- SHARED: monitoring.html — verified against PostgreSQL 16 -->
+<div class="guide-section" id="monitoring">
+  <h2>Monitor progress</h2>
+  <p>
+    Replication has two phases you watch differently: the <strong>initial copy</strong>
+    (existing rows being loaded) and <strong>streaming</strong> (live changes flowing).
+    The queries below tell you exactly where you are. Run the source queries on the
+    <em>publisher</em> and the target queries on the <em>subscriber</em>.
+  </p>
+
+  <h3>1. On the TARGET: is the initial copy finished?</h3>
+  <p>
+    Each table goes through states: <code>i</code> = initializing, <code>d</code> = copying
+    data, <code>s</code> = synchronized (finishing), <code>r</code> = ready (streaming).
+    When every row shows <code>r</code>, the initial copy is complete and the table is live.
+  </p>
+  <div class="code-block">
+    <span class="code-label">psql — on TARGET, inside the replicated database</span>
+<pre><code>SELECT srsubstate AS state, count(*) AS tables
+FROM pg_subscription_rel
+GROUP BY 1
+ORDER BY 1;
+-- state 'r' for every table  = initial copy done, now streaming</code></pre>
+  </div>
+
+  <h3>2. On the SOURCE: how far behind is the target (lag)?</h3>
+  <p>
+    Lag is the volume of WAL (write-ahead log) the source has generated that the target
+    has not yet confirmed applying. During a quiet period it should fall to <strong>0</strong>.
+    A steadily growing lag means the subscriber can't keep up (check network, target CPU/IO).
+  </p>
+  <div class="code-block">
+    <span class="code-label">psql — on SOURCE</span>
+<pre><code>SELECT
+  slot_name,
+  active,                                  -- t = a subscriber is connected
+  wal_status,                              -- 'reserved' is healthy; 'lost' is bad
+  pg_size_pretty(
+    pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)
+  ) AS lag
+FROM pg_replication_slots
+ORDER BY slot_name;</code></pre>
+  </div>
+  <div class="callout warn">
+    <span class="callout-title">Watch <code>wal_status</code></span>
+    If it ever shows <code>lost</code>, the source discarded WAL the target still needed and
+    replication is broken &mdash; you must re-seed. Keep the target caught up, and consider
+    a bounded <code>max_slot_wal_keep_size</code> only once you understand the trade-off.
+  </div>
+
+  <h3>3. On the TARGET: is the apply worker healthy?</h3>
+  <div class="code-block">
+    <span class="code-label">psql — on TARGET</span>
+<pre><code>-- live position of each subscription
+SELECT subname, received_lsn, latest_end_lsn, last_msg_receipt_time
+FROM pg_stat_subscription;
+
+-- error counters: apply_error_count &gt; 0 means the worker is hitting problems
+SELECT subname, apply_error_count, sync_error_count
+FROM pg_stat_subscription_stats;</code></pre>
+  </div>
+  <div class="callout note">
+    <span class="callout-title">What "caught up" looks like</span>
+    On the target <code>pg_subscription_rel</code> shows <code>r</code> for all tables, on the
+    source the slot <code>lag</code> is <code>0 bytes</code> during a write pause, and
+    <code>apply_error_count</code> stays at 0. That is your green light to validate and cut over.
+  </div>
+</div>

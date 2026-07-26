@@ -1,0 +1,312 @@
+<!-- SHARED: prerequisites-common.html — logical-replication basics that apply everywhere -->
+<div class="guide-section" id="common-prereqs">
+  <h2>Common prerequisites (all scenarios)</h2>
+  <p>These apply regardless of platform. The version &amp; platform-specific settings are in the
+     table above; the items here are true for every logical-replication setup.</p>
+
+  <h3>Configuration parameters to tune</h3>
+  <p>
+    Logical replication needs several server parameters set &mdash; some on the publisher, some on the
+    subscriber. These follow the manual's
+    <a href="https://www.postgresql.org/docs/current/logical-replication-config.html" target="_blank" rel="noopener">Configuration Settings</a>.
+    On managed platforms you set them through the platform's mechanism (RDS/Aurora parameter groups,
+    Cloud SQL/AlloyDB flags, Azure server parameters), and <code>wal_level</code> changes require a
+    restart/reboot.
+  </p>
+
+  <h4>On the PUBLISHER (source)</h4>
+  <table class="data-table">
+    <thead><tr><th>Parameter</th><th>Set to</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td><code>wal_level</code></td><td><code>logical</code></td>
+          <td>Enables the extra WAL detail logical decoding needs. <strong>Static &mdash; requires a
+              restart.</strong> On RDS/Aurora this is <code>rds.logical_replication = 1</code> instead.</td></tr>
+      <tr><td><code>max_replication_slots</code></td>
+          <td>&ge; number of subscriptions expected to connect, <em>plus</em> reserve for table sync</td>
+          <td>Each subscription uses a slot on the publisher; table synchronization uses extra
+              transient slots.</td></tr>
+      <tr><td><code>max_wal_senders</code></td>
+          <td>&ge; <code>max_replication_slots</code> + number of physical replicas</td>
+          <td>Each connected slot needs a WAL sender process; physical standbys need their own.</td></tr>
+    </tbody>
+  </table>
+
+  <h4>On the SUBSCRIBER (target)</h4>
+  <table class="data-table">
+    <thead><tr><th>Parameter</th><th>Set to</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td><code>max_replication_slots</code></td>
+          <td>&ge; number of subscriptions, plus reserve for table sync</td>
+          <td>Used on the subscriber to track the origin/progress of each subscription (a different
+              meaning than on the publisher).</td></tr>
+      <tr><td><code>max_logical_replication_workers</code></td>
+          <td>&ge; number of subscriptions, plus reserve for table sync workers</td>
+          <td>One apply worker per subscription, plus temporary workers that copy tables during the
+              initial sync.</td></tr>
+      <tr><td><code>max_worker_processes</code></td>
+          <td>&ge; <code>max_logical_replication_workers</code> + 1</td>
+          <td>Logical workers come from this pool, which is also shared with parallel queries and
+              other extensions &mdash; size it with headroom.</td></tr>
+    </tbody>
+  </table>
+  <div class="callout note">
+    <span class="callout-title">Check what's set</span>
+    <div class="code-block"><span class="code-label">psql — on each side</span>
+<pre><code>-- publisher
+SHOW wal_level;                       -- expect: logical
+SHOW max_replication_slots;
+SHOW max_wal_senders;
+-- subscriber
+SHOW max_replication_slots;
+SHOW max_logical_replication_workers;
+SHOW max_worker_processes;</code></pre></div>
+  </div>
+
+  <h3>Every replicated table needs a stable row identity</h3>
+  <p>
+    To replicate <code>UPDATE</code> and <code>DELETE</code>, PostgreSQL must be able to identify
+    each row on the target. A <strong>primary key</strong> does this automatically. Tables without
+    one need an explicit replica identity:
+  </p>
+  <div class="code-block"><span class="code-label">psql — on SOURCE, for tables without a PK</span>
+<pre><code>-- Option A: a unique, NOT NULL index
+ALTER TABLE my_table REPLICA IDENTITY USING INDEX my_unique_idx;
+
+-- Option B: log the full old row (heavier, but always works)
+ALTER TABLE my_table REPLICA IDENTITY FULL;</code></pre></div>
+  <div class="explain">Without a replica identity, INSERTs still replicate but UPDATE/DELETE will
+    error or be skipped, and your target silently drifts from the source.</div>
+  <div class="callout warn">
+    <span class="callout-title">A caveat with <code>REPLICA IDENTITY FULL</code></span>
+    The manual notes that with <code>REPLICA IDENTITY FULL</code>, UPDATE/DELETE cannot be applied on
+    the subscriber if the table has columns of a type with no default B-tree or hash operator class
+    (e.g. <code>point</code>, <code>box</code>). Prefer a primary key or
+    <code>REPLICA IDENTITY USING INDEX</code> for such tables.
+  </div>
+  <div class="callout danger">
+    <span class="callout-title">This also blocks writes on the SOURCE &mdash; not just replication</span>
+    If a table is part of a publication that publishes updates/deletes but has no replica identity,
+    PostgreSQL rejects the write on the <em>publisher itself</em>. Verified on PostgreSQL 16:
+    <div class="code-block"><span class="code-label">what your application hits on the SOURCE</span>
+<pre><code>ERROR:  cannot update table "orders" because it does not have a replica identity and publishes updates
+HINT:   To enable updating the table, set REPLICA IDENTITY using ALTER TABLE.</code></pre></div>
+    So the pre-flight check below isn't just about replication quality &mdash; skipping it can break
+    your live application the moment it runs an UPDATE/DELETE.
+  </div>
+
+  <h3>Pre-flight check: find tables that will break UPDATE/DELETE</h3>
+  <p>
+    Run this on the <strong>source</strong> before you start. It lists every ordinary/partitioned
+    table that has <em>no usable row identity</em> (replica identity <code>default</code> but no
+    primary key, or replica identity <code>nothing</code>). Any table it returns needs a primary key
+    or an explicit <code>REPLICA IDENTITY</code> first.
+  </p>
+  <div class="code-block"><span class="code-label">psql — on SOURCE (should return 0 rows before you proceed)</span>
+<pre><code>SELECT n.nspname AS schema,
+       c.relname AS "table",
+       CASE c.relreplident
+         WHEN 'd' THEN 'default (needs a PK)'
+         WHEN 'n' THEN 'nothing'
+       END AS replica_identity
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('r', 'p')                       -- ordinary + partitioned tables
+  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+  AND c.relreplident IN ('d', 'n')                  -- default or nothing
+  AND NOT EXISTS (                                  -- ...and no primary key
+        SELECT 1 FROM pg_index i
+        WHERE i.indrelid = c.oid AND i.indisprimary)
+ORDER BY 1, 2;</code></pre></div>
+  <div class="explain">Tables with a primary key, a <code>REPLICA IDENTITY USING INDEX</code>, or
+    <code>REPLICA IDENTITY FULL</code> are fine and won't appear. Only genuinely unsafe tables are
+    listed, so an empty result means you're clear.</div>
+
+  <h3>Planning: size &amp; write-activity of the tables you'll replicate</h3>
+  <p>
+    Run this on the <strong>source</strong> <em>before</em> you set up replication to plan the move.
+    Table/index <strong>sizes</strong> tell you how heavy the initial copy will be (and where a
+    physical seed may be worth it); the <strong>DML rate</strong> (inserts/updates/deletes per second
+    since the last stats reset) tells you how much change the stream must carry &mdash; useful for
+    sizing the subscriber and predicting lag.
+  </p>
+  <p>Scope it to a publication that already exists:</p>
+  <div class="code-block"><span class="code-label">psql — on SOURCE (tables in publication 'pub_app')</span>
+<pre><code>WITH db AS (   -- seconds since stats were last reset (DML counters are cumulative since then)
+  SELECT GREATEST(EXTRACT(EPOCH FROM (now() - stats_reset)), 1) AS secs
+  FROM pg_stat_database
+  WHERE datname = current_database()
+)
+SELECT
+  t.schemaname                                              AS schema,
+  t.relname                                                 AS "table",
+  t.n_live_tup                                              AS est_rows,
+  pg_size_pretty(pg_table_size(c.oid))                      AS table_size,      -- heap + TOAST
+  (SELECT count(*) FROM pg_index i WHERE i.indrelid = c.oid) AS idx_count,
+  pg_size_pretty(pg_indexes_size(c.oid))                    AS indexes_size,
+  pg_size_pretty(pg_total_relation_size(c.oid))             AS total_size,      -- heap + TOAST + indexes
+  t.n_tup_ins AS inserts, t.n_tup_upd AS updates, t.n_tup_del AS deletes,
+  round((t.n_tup_ins / db.secs)::numeric, 3)                AS ins_per_sec,
+  round((t.n_tup_upd / db.secs)::numeric, 3)                AS upd_per_sec,
+  round((t.n_tup_del / db.secs)::numeric, 3)                AS del_per_sec
+FROM pg_stat_user_tables t
+JOIN pg_class c ON c.oid = t.relid
+CROSS JOIN db
+WHERE (t.schemaname, t.relname) IN (
+        SELECT schemaname, tablename
+        FROM pg_publication_tables
+        WHERE pubname = 'pub_app')
+ORDER BY pg_total_relation_size(c.oid) DESC;</code></pre></div>
+
+  <p>Planning <em>before</em> the publication exists? Scope by the schemas (or tables) you intend to
+     publish instead &mdash; swap the <code>WHERE</code> clause for:</p>
+  <div class="code-block"><span class="code-label">psql — scope by schema list</span>
+<pre><code>WHERE t.schemaname IN ('app', 'sales', 'inventory')     -- schemas you plan to publish
+-- ...or an explicit table list:
+-- WHERE (t.schemaname, t.relname) IN (('app','customers'), ('app','orders'))</code></pre></div>
+
+  <p>And a single roll-up for the whole scope (total size + combined DML rate):</p>
+  <div class="code-block"><span class="code-label">psql — one-line summary of the replication scope</span>
+<pre><code>WITH db AS (
+  SELECT GREATEST(EXTRACT(EPOCH FROM (now() - stats_reset)), 1) AS secs
+  FROM pg_stat_database WHERE datname = current_database()),
+scope AS (
+  SELECT c.oid, t.n_tup_ins, t.n_tup_upd, t.n_tup_del, t.n_live_tup
+  FROM pg_stat_user_tables t
+  JOIN pg_class c ON c.oid = t.relid
+  WHERE (t.schemaname, t.relname) IN (
+          SELECT schemaname, tablename FROM pg_publication_tables WHERE pubname = 'pub_app'))
+SELECT count(*)                                          AS tables,
+       sum(n_live_tup)                                   AS est_rows,
+       pg_size_pretty(sum(pg_total_relation_size(oid)))  AS total_size,
+       round((sum(n_tup_ins + n_tup_upd + n_tup_del) / max(db.secs))::numeric, 2) AS total_dml_per_sec
+FROM scope CROSS JOIN db;</code></pre></div>
+  <div class="callout note">
+    <span class="callout-title">Reading the numbers</span>
+    <code>est_rows</code> and per-second rates come from the cumulative statistics views, so run
+    <code>ANALYZE</code> first for fresh row estimates, and remember the counters are totals
+    <em>since the last stats reset</em> &mdash; over a short window they can look inflated. For a true
+    steady-state rate, note the values, wait a known interval, and compare. Big tables with high
+    <code>ins/upd/del_per_sec</code> are the ones to watch for replication lag.
+  </div>
+
+  <h3>What logical replication does NOT replicate</h3>
+  <p>
+    These are silent gaps &mdash; plan for each one separately, or your target will be incomplete.
+    This list follows the PostgreSQL manual's
+    <a href="https://www.postgresql.org/docs/current/logical-replication-restrictions.html" target="_blank" rel="noopener">Restrictions</a>.
+  </p>
+  <table class="data-table">
+    <thead><tr><th>Not replicated</th><th>What to do instead</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Large objects</strong> (the <code>lo</code> / <code>pg_largeobject</code> interface)</td>
+          <td>The manual is explicit: there is no workaround other than storing the data in normal
+              tables. Move it to <code>bytea</code> columns (which <em>are</em> replicated), or migrate
+              large objects separately with <code>pg_dump -b</code>.</td></tr>
+      <tr><td><strong>Sequence values</strong> (the "next id" counters)</td>
+          <td>The data in serial/identity columns replicates as table data, but the sequence itself
+              stays at its start value on the subscriber. Sync sequences at cutover with
+              <code>setval()</code> (see the cutover step).</td></tr>
+      <tr><td><strong>DDL / schema changes</strong> (CREATE/ALTER/DROP)</td>
+          <td>Apply the same DDL to both sides yourself; keep them coordinated for the life of the
+              setup. Additive changes on the subscriber first avoids intermittent apply errors.</td></tr>
+      <tr><td><strong>Views, materialized views, foreign tables</strong></td>
+          <td>Only tables (including partitioned tables) can be replicated; attempting others raises an
+              error. Recreate/refresh these on the target.</td></tr>
+      <tr><td><strong>Unlogged &amp; temporary tables</strong></td>
+          <td>Their changes are not written to WAL, so nothing streams. Convert to a logged table
+              (<code>ALTER TABLE ... SET LOGGED</code>) if the data must move.</td></tr>
+      <tr><td><strong>TRUNCATE</strong> before PostgreSQL 11</td>
+          <td>Only replicated on PG 11+, and only when the publication includes <code>truncate</code>.
+              Even then, mind foreign-key groups (see restrictions).</td></tr>
+    </tbody>
+  </table>
+  <div class="callout note">
+    <span class="callout-title">Partitioned tables</span>
+    By default replication originates from the <em>leaf</em> partitions, so the same partitions must
+    exist on the subscriber. To replicate using the root table's identity instead, set
+    <code>publish_via_partition_root = true</code> on the publication.
+  </div>
+  <div class="callout warn">
+    <span class="callout-title">Check for large objects before you commit to a plan</span>
+    If this returns a non-zero count, part of your data lives in large objects that logical
+    replication will not carry:
+    <div class="code-block"><span class="code-label">psql — on SOURCE</span>
+<pre><code>SELECT count(*) AS large_object_count FROM pg_largeobject_metadata;</code></pre></div>
+  </div>
+
+  <h3>The target schema must exist before you subscribe</h3>
+  <p>
+    Logical replication copies <strong>data, not DDL</strong>. Tables (and their columns, types,
+    and constraints) must already exist on the target. Create them from the source's schema:
+  </p>
+  <div class="code-block"><span class="code-label">bash — copy schema only (no data)</span>
+<pre><code>pg_dump --schema-only \
+  "host=SOURCE port=5432 user=repluser dbname=appdb" \
+| psql "host=TARGET port=5432 user=repluser dbname=appdb"</code></pre></div>
+  <div class="callout note">
+    <span class="callout-title">Roles / globals</span>
+    <code>pg_dump --schema-only</code> does not include roles. If your objects are owned by
+    specific roles, create those roles on the target first (e.g. with
+    <code>pg_dumpall --roles-only</code>, editing out anything managed-platform-specific).
+  </div>
+
+  <h3>A dedicated replication user</h3>
+  <p>
+    Create a role specifically for the migration rather than reusing a superuser, where the platform
+    allows it. It needs the <code>REPLICATION</code> capability (to create/read replication slots on
+    the source) and <code>SELECT</code> on the tables being replicated. The subscriber connects to the
+    source <em>as this role</em>, so create it on the <strong>source</strong> (publisher).
+  </p>
+  <div class="code-block"><span class="code-label">psql — on SOURCE: self-managed PostgreSQL</span>
+<pre><code>-- 1. a login role with the REPLICATION attribute
+CREATE ROLE repluser WITH LOGIN REPLICATION PASSWORD 'strong-secret';
+
+-- 2. let it read the data it must replicate
+GRANT USAGE ON SCHEMA app TO repluser;
+GRANT SELECT ON ALL TABLES IN SCHEMA app TO repluser;
+-- make the grant apply to tables created later, too
+ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT SELECT ON TABLES TO repluser;</code></pre></div>
+  <p>
+    Then allow that role to connect for replication in <code>pg_hba.conf</code> (self-managed only) and
+    reload:
+  </p>
+  <div class="code-block"><span class="code-label">pg_hba.conf — on SOURCE (adjust the subscriber CIDR)</span>
+<pre><code># TYPE  DATABASE  USER      ADDRESS            METHOD
+host    appdb     repluser  10.0.0.0/24        scram-sha-256
+# then:  SELECT pg_reload_conf();</code></pre></div>
+
+  <h4>Managed platforms grant REPLICATION through a role, not the attribute</h4>
+  <p>On managed services you usually can't set the <code>REPLICATION</code> attribute directly; you
+     grant a platform role instead. The connecting/admin user is the one shown in each platform's row
+     of the version &amp; prerequisites table above.</p>
+  <div class="code-block"><span class="code-label">psql — on SOURCE: RDS / Aurora for PostgreSQL</span>
+<pre><code>CREATE ROLE repluser WITH LOGIN PASSWORD 'strong-secret';
+GRANT rds_replication TO repluser;                 -- RDS/Aurora replication privilege
+GRANT USAGE ON SCHEMA app TO repluser;
+GRANT SELECT ON ALL TABLES IN SCHEMA app TO repluser;
+ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT SELECT ON TABLES TO repluser;</code></pre></div>
+  <div class="code-block"><span class="code-label">psql — on SOURCE: Cloud SQL / AlloyDB / Azure Flexible Server</span>
+<pre><code>-- Cloud SQL / AlloyDB: connect as the admin (postgres / alloydbsuperuser) and grant REPLICATION
+CREATE ROLE repluser WITH LOGIN REPLICATION PASSWORD 'strong-secret';
+-- Azure Flexible Server: connect as the admin user, then
+--   CREATE ROLE repluser WITH LOGIN PASSWORD 'strong-secret';
+--   GRANT azure_pg_admin TO repluser;   -- or REPLICATION where permitted
+
+GRANT USAGE ON SCHEMA app TO repluser;
+GRANT SELECT ON ALL TABLES IN SCHEMA app TO repluser;
+ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT SELECT ON TABLES TO repluser;</code></pre></div>
+  <div class="callout note">
+    <span class="callout-title">On the subscriber (target)</span>
+    The role that runs <code>CREATE SUBSCRIPTION</code> needs elevated rights: on PG&nbsp;16+ grant it
+    <code>pg_create_subscription</code> (plus <code>CREATE</code> on the database); on PG&nbsp;&lt;&nbsp;16
+    it must be a superuser (<code>rds_superuser</code> on RDS/Aurora). The exact target grant is in the
+    prerequisites table above.
+  </div>
+
+  <div class="callout warn">
+    <span class="callout-title">Always test in non-production first</span>
+    Run the whole flow end-to-end against a copy of your data before doing it for real. Logical
+    replication is safe, but seeding mistakes and missing replica identities are easy to make and
+    much cheaper to discover in a rehearsal.
+  </div>
+</div>

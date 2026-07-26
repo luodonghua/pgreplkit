@@ -1,0 +1,40 @@
+<!-- PAIR: Google Cloud SQL for PostgreSQL -> Amazon Aurora PostgreSQL -->
+<div class="guide-section" data-role="intro">
+  <h2>Overview</h2>
+  <p>
+    You are migrating from <strong>Google Cloud SQL for PostgreSQL</strong> to
+    <strong>Amazon Aurora PostgreSQL</strong> &mdash; a cross-cloud move. Use logical replication:
+    <strong>Replication Copy</strong> or a <strong>pg_dump</strong> seed. Physical seeds are
+    provider-specific and do not apply here.
+  </p>
+
+  <div data-diagram="cross-cloud" data-src-cloud="GCP (Cloud SQL)" data-src="Cloud SQL" data-tgt="Amazon Aurora"></div>
+
+  <div class="callout note">
+    <span class="callout-title">Enable logical decoding on Cloud SQL (the source)</span>
+    Set the <code>cloudsql.logical_decoding = on</code> flag and restart, then grant
+    <code>REPLICATION</code> to the migration user.
+    <div class="code-block"><span class="code-label">bash — gcloud</span>
+<pre><code>gcloud sql instances patch MY_CLOUDSQL_INSTANCE \
+  --database-flags=cloudsql.logical_decoding=on
+#   SHOW wal_level;   -- expect: logical</code></pre></div>
+  </div>
+
+  <div class="callout warn">
+    <span class="callout-title">Cross-cloud networking</span>
+    Cloud SQL is the <strong>publisher</strong>; the Aurora writer (subscriber) connects outbound to
+    Cloud SQL on 5432. Use a public IP + Cloud SQL authorized networks (with SSL), or a
+    <strong>VPN / Cloud Interconnect</strong>. Verify reachability from the Aurora VPC first:
+    <div class="code-block"><span class="code-label">bash — from the Aurora VPC</span>
+<pre><code>psql "host=CLOUDSQL_IP port=5432 user=repluser dbname=appdb sslmode=require" -c "select 1"</code></pre></div>
+  </div>
+</div>
+
+<div data-include="prerequisites-common"></div>
+
+<div data-sync="replication-copy"><div data-include="setup-replication-copy"></div></div>
+<div data-sync="pg-dump"><div data-include="setup-pg-dump"></div></div>
+
+<div data-include="monitoring"></div>
+<div data-include="cutover"></div>
+<div data-include="troubleshooting"></div>

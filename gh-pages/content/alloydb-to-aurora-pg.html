@@ -1,0 +1,37 @@
+<!-- PAIR: Google AlloyDB for PostgreSQL -> Amazon Aurora PostgreSQL -->
+<div class="guide-section" data-role="intro">
+  <h2>Overview</h2>
+  <p>
+    You are migrating from <strong>Google AlloyDB for PostgreSQL</strong> to
+    <strong>Amazon Aurora PostgreSQL</strong> &mdash; a cross-cloud move. Use logical replication:
+    <strong>Replication Copy</strong> or a <strong>pg_dump</strong> seed.
+  </p>
+
+  <div data-diagram="cross-cloud" data-src-cloud="GCP (AlloyDB)" data-src="AlloyDB" data-tgt="Amazon Aurora"></div>
+
+  <div class="callout note">
+    <span class="callout-title">Enable logical decoding on AlloyDB (the source)</span>
+    Set the <code>alloydb.logical_decoding = on</code> flag and restart, then use
+    <code>alloydbsuperuser</code> (or a role granted <code>REPLICATION</code>).
+    <div class="code-block"><span class="code-label">SQL / verify</span>
+<pre><code>SHOW wal_level;   -- expect: logical</code></pre></div>
+  </div>
+
+  <div class="callout danger">
+    <span class="callout-title">AlloyDB is private-IP only</span>
+    The Aurora writer (subscriber) <strong>must</strong> reach AlloyDB over a
+    <strong>VPN or Cloud Interconnect</strong> between the AWS and GCP VPCs &mdash; there is no public
+    endpoint. Establish and test that path first:
+    <div class="code-block"><span class="code-label">bash — from the Aurora VPC (over the VPN)</span>
+<pre><code>psql "host=ALLOYDB_PRIVATE_IP port=5432 user=repluser dbname=appdb sslmode=require" -c "select 1"</code></pre></div>
+  </div>
+</div>
+
+<div data-include="prerequisites-common"></div>
+
+<div data-sync="replication-copy"><div data-include="setup-replication-copy"></div></div>
+<div data-sync="pg-dump"><div data-include="setup-pg-dump"></div></div>
+
+<div data-include="monitoring"></div>
+<div data-include="cutover"></div>
+<div data-include="troubleshooting"></div>

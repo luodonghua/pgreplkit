@@ -1,0 +1,31 @@
+<!-- PAIR: self-managed PostgreSQL -> Amazon Aurora PostgreSQL -->
+<div class="guide-section" data-role="intro">
+  <h2>Overview</h2>
+  <p>
+    You are moving from a <strong>self-managed PostgreSQL</strong> server to
+    <strong>Amazon Aurora PostgreSQL</strong> using logical replication, keeping cutover downtime to
+    just the final drain-and-switch. Logical replication crosses major versions, so you can upgrade
+    at the same time.
+  </p>
+  <div class="callout note">
+    <span class="callout-title">Direction of the connection</span>
+    The Aurora writer (the subscriber) connects <strong>outbound</strong> to your self-managed server
+    (the publisher) on port 5432. Allow the Aurora instance's address through your firewall / security
+    group and the source's <code>pg_hba.conf</code>. For a private Aurora cluster, connectivity to
+    your data center is over VPN or Direct Connect.
+  </div>
+  <div class="callout warn">
+    <span class="callout-title">Physical seeds don't apply here</span>
+    Aurora Fast Clone requires an Aurora <em>source</em>. From self-managed, use
+    <strong>Replication Copy</strong> or a <strong>pg_dump</strong> seed.
+  </div>
+</div>
+
+<div data-include="prerequisites-common"></div>
+
+<div data-sync="replication-copy"><div data-include="setup-replication-copy"></div></div>
+<div data-sync="pg-dump"><div data-include="setup-pg-dump"></div></div>
+
+<div data-include="monitoring"></div>
+<div data-include="cutover"></div>
+<div data-include="troubleshooting"></div>

@@ -1,0 +1,30 @@
+<!-- PAIR: Amazon Aurora PostgreSQL -> Amazon RDS for PostgreSQL -->
+<div class="guide-section" data-role="intro">
+  <h2>Overview</h2>
+  <p>
+    You are moving from <strong>Amazon Aurora PostgreSQL</strong> to
+    <strong>Amazon RDS for PostgreSQL</strong> &mdash; for example, to leave Aurora for standard RDS.
+    These are <em>different engines</em>, so physical seeds (Aurora clone, RDS snapshot) do
+    <strong>not</strong> cross between them. Use logical replication: <strong>Replication Copy</strong>
+    or a <strong>pg_dump</strong> seed.
+  </p>
+  <div class="callout note">
+    <span class="callout-title">Enable logical WAL on the source (Aurora)</span>
+    Set <code>rds.logical_replication = 1</code> in the source's DB <strong>cluster</strong> parameter
+    group (static &rarr; reboot). Confirm with <code>SHOW rds.logical_replication;</code>.
+  </div>
+  <div class="callout note">
+    <span class="callout-title">Networking</span>
+    The RDS instance (subscriber) connects to the Aurora writer (publisher) on 5432. Use the Aurora
+    writer's <strong>private</strong> address and allow the VPC CIDR on the Aurora security group.
+  </div>
+</div>
+
+<div data-include="prerequisites-common"></div>
+
+<div data-sync="replication-copy"><div data-include="setup-replication-copy"></div></div>
+<div data-sync="pg-dump"><div data-include="setup-pg-dump"></div></div>
+
+<div data-include="monitoring"></div>
+<div data-include="cutover"></div>
+<div data-include="troubleshooting"></div>

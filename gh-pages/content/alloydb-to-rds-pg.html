@@ -1,0 +1,41 @@
+<!-- PAIR: Google AlloyDB for PostgreSQL -> Amazon RDS for PostgreSQL -->
+<div class="guide-section" data-role="intro">
+  <h2>Overview</h2>
+  <p>
+    You are migrating from <strong>Google AlloyDB for PostgreSQL</strong> to
+    <strong>Amazon RDS for PostgreSQL</strong> &mdash; a cross-cloud move. AlloyDB is
+    PostgreSQL-compatible and can act as a logical-replication publisher, so use
+    <strong>Replication Copy</strong> or a <strong>pg_dump</strong> seed. Provider-specific physical
+    seeds do not apply.
+  </p>
+
+  <div data-diagram="cross-cloud" data-src-cloud="GCP (AlloyDB)" data-src="AlloyDB" data-tgt="Amazon RDS"></div>
+
+  <div class="callout note">
+    <span class="callout-title">Enable logical decoding on AlloyDB (the source)</span>
+    Set the <code>alloydb.logical_decoding = on</code> database flag on the AlloyDB instance and
+    restart it. Use the <code>alloydbsuperuser</code> role (or a role granted <code>REPLICATION</code>)
+    for the migration.
+    <div class="code-block"><span class="code-label">SQL / verify</span>
+<pre><code>-- after setting the flag and restarting:
+SHOW wal_level;   -- expect: logical</code></pre></div>
+  </div>
+
+  <div class="callout danger">
+    <span class="callout-title">AlloyDB is private-IP only</span>
+    AlloyDB does not offer a public endpoint, so the RDS subscriber <strong>must</strong> reach it over
+    a <strong>VPN or Cloud Interconnect</strong> between the AWS VPC and the GCP VPC. There is no
+    public-IP shortcut. Establish and test that private path before you start:
+    <div class="code-block"><span class="code-label">bash — from a host in the RDS VPC (over the VPN)</span>
+<pre><code>psql "host=ALLOYDB_PRIVATE_IP port=5432 user=repluser dbname=appdb sslmode=require" -c "select 1"</code></pre></div>
+  </div>
+</div>
+
+<div data-include="prerequisites-common"></div>
+
+<div data-sync="replication-copy"><div data-include="setup-replication-copy"></div></div>
+<div data-sync="pg-dump"><div data-include="setup-pg-dump"></div></div>
+
+<div data-include="monitoring"></div>
+<div data-include="cutover"></div>
+<div data-include="troubleshooting"></div>

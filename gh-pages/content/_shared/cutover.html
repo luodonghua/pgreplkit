@@ -1,0 +1,76 @@
+<!-- SHARED: cutover.html — the switch-over sequence, common to all scenarios -->
+<div class="guide-section" id="cutover">
+  <h2>Cut over to the target</h2>
+  <p>
+    Cutover is the moment you move your application from the source to the target. Do it only
+    when the target is fully caught up. The order below guarantees you lose no committed data.
+  </p>
+
+  <div data-diagram="cutover-reverse"></div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">1</span> Stop writes on the source</div>
+    <p>Put the application into maintenance mode, or revoke write access, so no new changes are
+       made on the source. Reads can continue.</p>
+    <div class="explain">Until writes stop, the target is a moving target &mdash; there is always a
+      little more data to apply. Stopping writes lets the stream drain to zero.</div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">2</span> Wait for lag to reach zero</div>
+    <div class="code-block"><span class="code-label">psql — on SOURCE</span>
+<pre><code>SELECT slot_name,
+       pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn) AS lag_bytes
+FROM pg_replication_slots;
+-- wait until lag_bytes = 0 for every slot</code></pre></div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">3</span> Sync sequences</div>
+    <p>Logical replication does <strong>not</strong> replicate sequence values (the "next id"
+       counters). If you skip this, the target can hand out IDs that already exist and inserts
+       will fail. Copy every sequence's current value from source to target:</p>
+    <div class="code-block"><span class="code-label">bash — generate + apply setval statements</span>
+<pre><code># On the SOURCE: produce a script of setval() calls for all sequences
+psql "host=SOURCE port=5432 user=repluser dbname=appdb" -Atc "
+  SELECT format('SELECT setval(%L, %s, true);',
+                schemaname||'.'||sequencename,
+                last_value)
+  FROM pg_sequences
+  WHERE last_value IS NOT NULL;
+" &gt; sync_sequences.sql
+
+# Apply it on the TARGET
+psql "host=TARGET port=5432 user=repluser dbname=appdb" -f sync_sequences.sql</code></pre></div>
+    <div class="explain">Sequences live outside the logical stream. Re-basing them on the source's
+      current values prevents duplicate-key errors the first time the app writes to the target.</div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">4</span> Validate</div>
+    <p>Confirm the two sides match before you commit to the switch.</p>
+    <div class="code-block"><span class="code-label">bash — compare row counts per table</span>
+<pre><code>for t in customers orders; do
+  echo -n "$t  source="
+  psql "host=SOURCE port=5432 user=repluser dbname=appdb" -Atc "SELECT count(*) FROM $t"
+  echo -n "$t  target="
+  psql "host=TARGET port=5432 user=repluser dbname=appdb" -Atc "SELECT count(*) FROM $t"
+done</code></pre></div>
+    <p class="help-text">For stronger checks, compare per-table checksums (e.g. an aggregate over a
+       hash of each row) rather than only counts.</p>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">5</span> Switch application traffic to the target</div>
+    <p>Repoint your application's connection string (or DNS / connection proxy) to the target and
+       re-enable writes. The migration is complete.</p>
+  </div>
+
+  <div class="callout tip">
+    <span class="callout-title">Optional: rollback insurance (reverse replication)</span>
+    Before opening writes on the target, you can set up replication in the reverse direction
+    (target &rarr; source) so the old source stays current and you can fall back to it. Keep the
+    target quiesced while you wire the reverse direction, then open writes. See pgreplkit's
+    <code>reverse</code> workflow for an automated version of this.
+  </div>
+</div>

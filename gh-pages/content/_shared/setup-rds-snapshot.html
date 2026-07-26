@@ -1,0 +1,109 @@
+<!-- SHARED SETUP: RDS snapshot-restore physical seed (RDS -> RDS, same major version). -->
+<div class="guide-section" id="setup">
+  <h2>Set up replication &mdash; RDS Snapshot Restore</h2>
+  <p>
+    For a large RDS database, a physical snapshot restore is far faster than copying rows logically.
+    An RDS snapshot restore <strong>preserves LSN continuity</strong>, so the restored target knows
+    the exact WAL position it was seeded at &mdash; you resume logical streaming from there,
+    <strong>exactly once</strong>.
+  </p>
+  <div class="callout warn">
+    <span class="callout-title">Same major version only</span>
+    A physical restore keeps the source's major version. You cannot seed, say, a PostgreSQL 17
+    target from a 16 snapshot this way. For a cross-version move use Replication Copy or pg_dump.
+    (To combine this fast seed <em>with</em> a major upgrade, capture the seed LSN first, then
+    upgrade the restored target &mdash; see the upgrade note at the end.)
+  </div>
+
+  <div data-diagram="physical-seed-rds"></div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">1</span> Prepare the SOURCE: publication, then slot</div>
+    <div class="code-block"><span class="code-label">psql — on SOURCE (order matters)</span>
+<pre><code>-- 1a. publication FIRST
+CREATE PUBLICATION pub_app FOR TABLE customers, orders;
+-- (or FOR TABLES IN SCHEMA app;  on PG 15+)
+
+-- 1b. then the logical slot (pins WAL from its restart_lsn)
+SELECT pg_create_logical_replication_slot('sub_app', 'pgoutput');</code></pre></div>
+    <div class="explain">The slot must exist <em>before</em> you snapshot, so the snapshot contains it
+      and the source retains all WAL committed after the slot's position.</div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">2</span> Take an RDS snapshot of the source</div>
+    <div class="code-block"><span class="code-label">bash — AWS CLI</span>
+<pre><code>aws rds create-db-snapshot \
+  --db-instance-identifier blue \
+  --db-snapshot-identifier blue-seed-snap \
+  --region us-east-1
+aws rds wait db-snapshot-available \
+  --db-snapshot-identifier blue-seed-snap --region us-east-1</code></pre></div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">3</span> Restore the TARGET (green) from the snapshot</div>
+    <div class="code-block"><span class="code-label">bash — AWS CLI</span>
+<pre><code>aws rds restore-db-instance-from-db-snapshot \
+  --db-instance-identifier green \
+  --db-snapshot-identifier blue-seed-snap \
+  --db-instance-class db.r6g.large \
+  --db-subnet-group-name my-subnet-group \
+  --vpc-security-group-ids sg-0123456789 \
+  --db-parameter-group-name pg16-logical \
+  --region us-east-1
+aws rds wait db-instance-available \
+  --db-instance-identifier green --region us-east-1</code></pre></div>
+    <div class="callout note">
+      <span class="callout-title">Networking</span>
+      The restored green must be able to reach the source publisher on 5432. Within a VPC, prefer
+      allowing the VPC CIDR on the source's security group and connecting to the source's
+      <strong>private</strong> address (public RDS endpoints can resolve to a public IP that the
+      subscriber can't route to).
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">4</span> Capture the seed LSN on the TARGET</div>
+    <p>RDS exposes the exact WAL position the restore was taken at:</p>
+    <div class="code-block"><span class="code-label">psql — on TARGET (green)</span>
+<pre><code>SELECT rds_tools.logical_seed_lsn();
+--  logical_seed_lsn
+--  0/4F0A2B8            &lt;- save this value
+</code></pre></div>
+    <div class="explain">This LSN is the "you are here" marker on the source's timeline. Everything at
+      or before it is already inside the physical restore; everything after it must come from the
+      stream. That's how we avoid both gaps and duplicates.</div>
+  </div>
+
+  <div class="step">
+    <div class="step-title"><span class="step-num">5</span> Wire the subscription and advance the origin</div>
+    <p>Create the subscription reusing the source slot (no copy, no new slot, start disabled),
+       advance its replication origin to the seed LSN, then enable it.</p>
+    <div class="code-block"><span class="code-label">psql — on TARGET (green)</span>
+<pre><code>CREATE SUBSCRIPTION sub_app
+  CONNECTION 'host=SOURCE_PRIVATE_IP port=5432 user=repluser password=SECRET dbname=appdb'
+  PUBLICATION pub_app
+  WITH (copy_data = false, create_slot = false, enabled = false, slot_name = 'sub_app');
+
+-- find the subscription's internal origin name: pg_&lt;oid&gt;
+SELECT 'pg_' || oid AS origin FROM pg_subscription WHERE subname = 'sub_app';
+
+-- advance the origin to the seed LSN captured in step 4 (the exactly-once boundary)
+SELECT pg_replication_origin_advance('pg_16417', '0/4F0A2B8');
+
+-- now start streaming from that point
+ALTER SUBSCRIPTION sub_app ENABLE;</code></pre></div>
+    <div class="explain">Advancing the origin tells the subscriber "I already have everything up to this
+      LSN (from the physical restore); only send me what comes after." That single step is what makes
+      the physical seed + logical stream join cleanly, exactly once.</div>
+  </div>
+
+  <div class="callout note">
+    <span class="callout-title">Combining with a major-version upgrade</span>
+    To also upgrade (e.g. 16 &rarr; 17): do steps 1&ndash;4 while both sides are 16 and
+    <strong>save the seed LSN before upgrading</strong>. Then major-upgrade green in place, and only
+    afterwards do step 5 on the upgraded green. The seed LSN is a point on the source's timeline, so
+    the upgrade does not invalidate it.
+  </div>
+</div>
