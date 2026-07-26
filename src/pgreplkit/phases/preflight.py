@@ -150,10 +150,19 @@ def run_preflight(ctx: Context) -> CheckReport:
             seqs = catalog.count_sequences(conn)
             los = catalog.count_large_objects(conn)
             src_info = catalog.database_info(conn, ds.name)
+            full_ri_unsafe = catalog.full_ri_unsafe_columns(conn)
 
         report.extend(pc.check_replica_identity(relations))
         report.extend(pc.check_relation_kinds(relations))
         report.extend(pc.check_unreplicated_objects(ds.name, seqs, los))
+
+        # REPLICA IDENTITY FULL with non-comparable column types (scoped tables only)
+        scoped_refs = {r.ref for r in relations}
+        report.extend(
+            pc.check_replica_identity_full_types(
+                {ref: cols for ref, cols in full_ri_unsafe.items() if ref in scoped_refs}
+            )
+        )
 
         if cfg.target is not None and src_info is not None:
             report.extend(_target_parity(cfg, ds.name, src_info))

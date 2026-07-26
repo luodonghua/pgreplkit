@@ -125,6 +125,74 @@ def render_checks(report, *, json_output: bool = False) -> None:
             _console.print(f"  [dim]{r.code}:[/dim] {r.remediation}")
 
 
+def render_sizing(rows, *, json_output: bool = False) -> None:
+    """Render the pre-replication sizing/activity report (list[SizingRow])."""
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "tables": [
+                        {
+                            "db": r.db,
+                            "table": r.qualified,
+                            "est_rows": r.est_rows,
+                            "table_size": r.table_size,
+                            "index_count": r.index_count,
+                            "index_size": r.index_size,
+                            "total_size": r.total_size,
+                            "total_bytes": r.total_bytes,
+                            "ins_per_sec": r.ins_per_sec,
+                            "upd_per_sec": r.upd_per_sec,
+                            "del_per_sec": r.del_per_sec,
+                        }
+                        for r in rows
+                    ],
+                    "summary": {
+                        "tables": len(rows),
+                        "total_bytes": sum(r.total_bytes for r in rows),
+                        "total_dml_per_sec": round(
+                            sum(r.ins_per_sec + r.upd_per_sec + r.del_per_sec for r in rows), 3
+                        ),
+                    },
+                },
+                indent=2,
+            )
+        )
+        return
+
+    table = Table(title="pgreplkit sizing — replication scope footprint & write activity")
+    table.add_column("database", style="cyan")
+    table.add_column("table", style="cyan")
+    table.add_column("est rows", justify="right")
+    table.add_column("table", justify="right")
+    table.add_column("idx", justify="right")
+    table.add_column("index", justify="right")
+    table.add_column("total", justify="right")
+    table.add_column("ins/s", justify="right")
+    table.add_column("upd/s", justify="right")
+    table.add_column("del/s", justify="right")
+
+    for r in rows:
+        table.add_row(
+            r.db, r.qualified, f"{r.est_rows:,}", r.table_size, str(r.index_count),
+            r.index_size, r.total_size,
+            f"{r.ins_per_sec:g}", f"{r.upd_per_sec:g}", f"{r.del_per_sec:g}",
+        )
+    _console.print(table)
+    if not rows:
+        _console.print("[dim]no in-scope tables found[/dim]")
+        return
+    total_bytes = sum(r.total_bytes for r in rows)
+    total_dml = sum(r.ins_per_sec + r.upd_per_sec + r.del_per_sec for r in rows)
+    from pgreplkit.phases.sizing import human_bytes
+
+    _console.print(
+        f"[bold]{len(rows)}[/bold] table(s), total size [bold]{human_bytes(total_bytes)}[/bold], "
+        f"combined write rate [bold]{total_dml:g}[/bold] rows/s "
+        f"(since last stats reset — run ANALYZE first and sample twice for a true rate)."
+    )
+
+
 def render_status(rows, *, json_output: bool = False) -> None:
     if json_output:
         print(

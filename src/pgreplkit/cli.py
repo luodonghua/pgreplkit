@@ -103,6 +103,18 @@ def discover(ctx: typer.Context) -> None:
 
 
 @app.command()
+def sizing(ctx: typer.Context) -> None:
+    """Pre-replication planning: per-table size, index footprint & write rate (read-only).
+
+    Helps choose an initial-sync method (logical copy vs. physical seed for very large
+    tables) and anticipate steady-state lag from the source's write activity.
+    """
+    from pgreplkit.phases.sizing import run_sizing
+
+    run_sizing(_build_context(ctx))
+
+
+@app.command()
 def plan(
     ctx: typer.Context,
     slots: SlotStrategy = typer.Option(SlotStrategy.BALANCED, "--slots"),

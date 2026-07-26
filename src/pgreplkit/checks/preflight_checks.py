@@ -14,7 +14,14 @@ _KIND_NAME = {"v": "view", "m": "materialized view", "f": "foreign table"}
 
 
 def check_replica_identity(relations: list[RelationInfo]) -> list[CheckResult]:
-    """FR-14..16: tables need a usable REPLICA IDENTITY for UPDATE/DELETE."""
+    """FR-14..16: tables need a usable REPLICA IDENTITY for UPDATE/DELETE.
+
+    A published table with no usable replica identity is not merely a replication
+    problem: once it belongs to a publication that publishes UPDATE/DELETE, the
+    *publisher* rejects those statements outright (verified on PG16:
+    "cannot update table ... because it does not have a replica identity and publishes
+    updates"), which blocks the application's own writes on the source.
+    """
     out: list[CheckResult] = []
     for rel in relations:
         if not rel.is_ordinary_table:
@@ -28,7 +35,9 @@ def check_replica_identity(relations: list[RelationInfo]) -> list[CheckResult]:
                     Level.BLOCK,
                     "replica_identity",
                     f"{rel.ref.qualified} has no usable REPLICA IDENTITY "
-                    "(no PK/unique index, not FULL); UPDATE/DELETE will not replicate",
+                    "(no PK/unique index, not FULL): once it is published for "
+                    "UPDATE/DELETE, the SOURCE will reject those writes (blocking the "
+                    "application), and the changes will not replicate",
                     remediation=(
                         "add a PRIMARY KEY (preferred), or a UNIQUE index + "
                         "REPLICA IDENTITY USING INDEX; or set REPLICA IDENTITY FULL "
@@ -39,6 +48,39 @@ def check_replica_identity(relations: list[RelationInfo]) -> list[CheckResult]:
                     subject=rel.ref.qualified,
                 )
             )
+    return out
+
+
+def check_replica_identity_full_types(
+    unsafe_columns: dict,
+) -> list[CheckResult]:
+    """Tables using REPLICA IDENTITY FULL whose columns include a type with no default
+    B-tree/hash operator class (e.g. ``point``, ``box``, ``json``, ``xml``).
+
+    Per the PostgreSQL manual, with FULL replica identity the subscriber cannot apply
+    UPDATE/DELETE when such a column is present (there is no operator to match the old
+    row). ``check_replica_identity`` treats FULL as always safe; this catches the
+    exception. ``unsafe_columns`` maps a table ref -> list of offending column names.
+    """
+    out: list[CheckResult] = []
+    for ref, cols in unsafe_columns.items():
+        if not cols:
+            continue
+        collist = ", ".join(cols)
+        out.append(
+            CheckResult(
+                Level.WARN,
+                "replica_identity_full_types",
+                f"{ref.qualified} uses REPLICA IDENTITY FULL but has column(s) "
+                f"{collist} whose type has no default B-tree/hash operator class; "
+                "the subscriber cannot apply UPDATE/DELETE for such rows",
+                remediation=(
+                    "define a PRIMARY KEY, or a UNIQUE index on comparable columns with "
+                    "REPLICA IDENTITY USING INDEX, instead of REPLICA IDENTITY FULL"
+                ),
+                subject=ref.qualified,
+            )
+        )
     return out
 
 
@@ -155,7 +197,12 @@ def check_target_columns(
     db: str, table_qualified: str, source_cols: list[tuple], target_cols: list[tuple]
 ) -> list[CheckResult]:
     """FR-18/19: for copy/pre-seeded, each in-scope table must exist on the target with
-    compatible columns (name, type, nullability, order)."""
+    compatible columns (name, type, nullability, order, and generated status).
+
+    A column that is generated (GENERATED ALWAYS AS ...) on one side but plain on the
+    other is rejected by the apply worker ("has incompatible generated column"); this is
+    surfaced with a specific message when the signatures carry the generated flag
+    (4-tuples: name, type, nullable, generated)."""
     subject = f"{db}.{table_qualified}"
     if not target_cols:
         return [
@@ -168,16 +215,42 @@ def check_target_columns(
             )
         ]
     if source_cols != target_cols:
+        gen_cols = _generated_mismatch(source_cols, target_cols)
+        if gen_cols:
+            cols = ", ".join(gen_cols)
+            return [
+                CheckResult(
+                    Level.BLOCK, "target_generated_column_mismatch",
+                    f"{subject} column(s) {cols} are GENERATED on one side but not the "
+                    "other; the subscriber rejects incompatible generated columns",
+                    remediation="make the column's generated-ness match on both sides",
+                    subject=subject,
+                )
+            ]
         return [
             CheckResult(
                 Level.BLOCK, "target_columns_mismatch",
                 f"{subject} column definitions differ between source and target "
-                "(name/type/nullability/order)",
+                "(name/type/nullability/generated/order)",
                 remediation="align the target table DDL with the source",
                 subject=subject,
             )
         ]
     return []
+
+
+def _generated_mismatch(source_cols: list[tuple], target_cols: list[tuple]) -> list[str]:
+    """Names of columns present on both sides whose *generated* status differs.
+
+    Only meaningful when the signatures are 4-tuples (…, generated); returns [] for the
+    legacy 3-tuple form so older callers/tests behave unchanged.
+    """
+    def gen_by_name(cols: list[tuple]) -> dict[str, str]:
+        return {c[0]: c[3] for c in cols if len(c) >= 4}
+
+    s = gen_by_name(source_cols)
+    t = gen_by_name(target_cols)
+    return sorted(name for name in s.keys() & t.keys() if s[name] != t[name])
 
 
 def check_source_params(

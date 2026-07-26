@@ -4,4 +4,4 @@ deployments, with first-class RDS/Aurora support.
 See REQUIREMENTS.md and DESIGN.md at the repo root.
 """
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

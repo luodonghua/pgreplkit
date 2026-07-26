@@ -16,11 +16,32 @@ It handles the parts that homegrown scripts get wrong: replica-identity checks, 
 bloat, seed-LSN ordering for physical seeds, unreplicated objects (sequences, large
 objects, roles, tablespaces), cross-slot consistency, and version/feature gating.
 
+## Interactive setup guide (no install required)
+
+Prefer to set replication up **by hand**, or just want to understand each step? An
+interactive, scenario-driven guide is published via GitHub Pages:
+
+**➡ https://luodonghua.github.io/pgreplkit/**
+
+Pick your source (self-managed, RDS, Aurora, Cloud SQL, AlloyDB, Azure Flexible Server),
+target (RDS or Aurora), initial-sync method, and scope, and it generates a tailored,
+copy-paste runbook — prerequisites, setup SQL, monitoring, cutover, troubleshooting, and
+flow diagrams, with links to the official PostgreSQL/AWS/GCP/Azure docs. It also covers
+the PG16 `origin = none` **bi-directional** setup. The guide is standalone (it does not
+require pgreplkit); the source lives under [`gh-pages/`](gh-pages/).
+
 ## Features
 
 - **Discovery & preflight** — enumerate databases/schemas/tables with skip rules;
-  read-only checks for replica identity, non-replicable relation kinds, target schema,
-  encoding/collation parity, source/target prerequisites, and WAL-retention safety.
+  read-only checks for replica identity (including the caveat that a published table
+  with no identity blocks UPDATE/DELETE on the *source*, and that `REPLICA IDENTITY FULL`
+  fails to apply for column types with no default B-tree/hash operator class),
+  non-replicable relation kinds, target schema and column parity (name/type/nullability/
+  **generated status**), encoding/collation parity, source/target prerequisites, and
+  WAL-retention safety.
+- **Sizing & planning** — a read-only `sizing` report of per-table storage (table +
+  index) and recent write activity (inserts/updates/deletes per second) across the
+  replication scope, to inform copy-vs-physical-seed choice and lag expectations.
 - **Slot allocation** — `single`, `per-schema`, `balanced` (FK-affinity grouping +
   weighted bin-packing into N slots, the default), or `manual` (explicit slot map with
   explicit-name > glob > catch-all precedence), with a publisher decode-cost cap. An
@@ -68,6 +89,7 @@ etc.). See the playbooks for full `config.yml` examples.
 | Command | Purpose |
 |---|---|
 | `discover` | Enumerate DBs/schemas/tables; in-scope vs skipped |
+| `sizing` | Pre-replication planning: per-table size, index footprint & write rate |
 | `plan` | Emit the balanced slot layout as editable YAML (seed for `manual`) |
 | `preflight` | Read-only eligibility & prerequisite report |
 | `globals` | Detect/recreate roles & tablespaces on the target |
@@ -120,19 +142,21 @@ Integration tests need a live PostgreSQL (Docker) and are gated on env vars
 (`PGREPLKIT_IT_HOST`, `PGREPLKIT_IT_TGT_HOST`, …). Managed-engine paths are exercised by
 the scripts under `scripts/` against real RDS.
 
-## Status (v0.1)
+## Status (v1.1)
 
-Implemented and exercised on real infra: discovery, preflight (incl. source+target
-replication-parameter checks and target table/column compatibility), globals, setup
-(copy + physical-seed with exactly-once seed-LSN resume), monitor, validate (row counts
-**and** content checksums), cutover, reverse (writes-quiesced), teardown, `guide`, and
+Implemented and exercised on real infra: discovery, **sizing/activity planning**,
+preflight (incl. source+target replication-parameter checks, target table/column
+compatibility with generated-column parity, `REPLICA IDENTITY FULL` datatype caveat, and
+source-write-block framing for missing replica identity), globals, setup (copy +
+physical-seed with exactly-once seed-LSN resume), monitor, validate (row counts **and**
+content checksums), cutover, reverse (writes-quiesced), teardown, `guide`, and
 **partition spreading** (`--spread-partitions`, verified end-to-end on a partitioned
 table across a local PostgreSQL 16 pair). `secret_ref` resolves from AWS Secrets
 Manager, and `${VAR}` references in the config file expand from the environment.
 
-Not yet active in v0.1 (planned, documented in REQUIREMENTS.md): cross-database
-**parallel** execution (`setup` runs sequentially; `--concurrency` is not wired) — a
-performance feature deferred so the single-writer manifest stays race-free.
+Not yet active (planned, documented in REQUIREMENTS.md): cross-database **parallel**
+execution (`setup` runs sequentially; `--concurrency` is not wired) — a performance
+feature deferred so the single-writer manifest stays race-free.
 
 ## Safety
 

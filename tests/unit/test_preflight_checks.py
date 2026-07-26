@@ -130,6 +130,56 @@ def test_version_block_below_min() -> None:
     assert pc.check_version(features_from_version_num(160004)) == []
 
 
+def test_replica_identity_full_types_warns() -> None:
+    from pgreplkit.core.model import TableRef
+
+    unsafe = {
+        TableRef("public", "geoms"): ["shape", "bbox"],
+        TableRef("public", "clean"): [],  # empty -> no result
+    }
+    results = pc.check_replica_identity_full_types(unsafe)
+    assert len(results) == 1
+    r = results[0]
+    assert r.code == "replica_identity_full_types"
+    assert r.level == Level.WARN
+    assert r.subject == "public.geoms"
+    assert "shape" in r.message and "bbox" in r.message
+
+
+def test_replica_identity_full_types_empty() -> None:
+    assert pc.check_replica_identity_full_types({}) == []
+
+
+def test_target_columns_generated_mismatch() -> None:
+    # 4-tuples: (name, type, nullable, generated)
+    src = [("id", "integer", "NO", "NEVER"), ("total", "numeric", "YES", "ALWAYS")]
+    tgt = [("id", "integer", "NO", "NEVER"), ("total", "numeric", "YES", "NEVER")]
+    r = pc.check_target_columns("appdb", "public.t", src, tgt)
+    assert len(r) == 1
+    assert r[0].code == "target_generated_column_mismatch"
+    assert r[0].level == Level.BLOCK
+    assert "total" in r[0].message
+
+
+def test_target_columns_generic_mismatch_still_reported() -> None:
+    # differ by type, not generated -> generic mismatch
+    src = [("id", "integer", "NO", "NEVER")]
+    tgt = [("id", "bigint", "NO", "NEVER")]
+    r = pc.check_target_columns("appdb", "public.t", src, tgt)
+    assert r and r[0].code == "target_columns_mismatch"
+
+
+def test_target_columns_identical_generated_ok() -> None:
+    src = [("id", "integer", "NO", "NEVER"), ("g", "integer", "YES", "ALWAYS")]
+    assert pc.check_target_columns("appdb", "public.t", src, src) == []
+
+
+def test_replica_identity_message_mentions_source_write_block() -> None:
+    rels = [rel("bad", replica_identity="n", has_pk=False)]
+    results = pc.check_replica_identity(rels)
+    assert results and "SOURCE" in results[0].message
+
+
 def test_target_columns_missing_and_mismatch() -> None:
     src = [("id", "integer", "NO"), ("v", "text", "YES")]
     # missing on target

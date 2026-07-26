@@ -188,6 +188,131 @@ def partition_map(conn: psycopg.Connection) -> dict[TableRef, list[TableRef]]:
     return out
 
 
+def full_ri_unsafe_columns(conn: psycopg.Connection) -> dict[TableRef, list[str]]:
+    """Tables with REPLICA IDENTITY FULL that have column(s) whose type has no default
+    B-tree or hash operator class.
+
+    With FULL replica identity the subscriber matches the old row by all columns, so a
+    column type with no equality/ordering operator class makes UPDATE/DELETE unappliable
+    (PostgreSQL manual, Logical Replication Restrictions). Returns table -> offending
+    column names. Only ordinary/partitioned tables outside system schemas are inspected.
+    """
+    rows = fetch_all(
+        conn,
+        """
+        SELECT n.nspname AS schema, c.relname AS name, a.attname AS column
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0
+                           AND NOT a.attisdropped
+        WHERE c.relkind IN ('r', 'p')
+          AND c.relreplident = 'f'
+          AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+          AND NOT EXISTS (
+                SELECT 1
+                FROM pg_opclass oc
+                JOIN pg_am am ON am.oid = oc.opcmethod
+                WHERE oc.opcintype = a.atttypid
+                  AND oc.opcdefault
+                  AND am.amname IN ('btree', 'hash')
+          )
+        ORDER BY 1, 2, 3
+        """,
+    )
+    out: dict[TableRef, list[str]] = {}
+    for r in rows:
+        out.setdefault(TableRef(r["schema"], r["name"]), []).append(r["column"])
+    return out
+
+
+@dataclass(frozen=True)
+class TableSizing:
+    """Planning facts for one table: storage footprint + write activity.
+
+    Byte counts come from the pg_*_size() functions; ``est_rows`` and the DML counters
+    come from the cumulative statistics views. ``seconds_since_reset`` is shared per
+    database (from pg_stat_database.stats_reset) so callers can derive per-second rates.
+    """
+    ref: TableRef
+    est_rows: int
+    table_bytes: int
+    index_bytes: int
+    total_bytes: int
+    index_count: int
+    inserts: int
+    updates: int
+    deletes: int
+
+
+def seconds_since_stats_reset(conn: psycopg.Connection) -> float:
+    """Seconds since this database's cumulative stats were last reset (>= 1.0).
+
+    DML counters in pg_stat_all_tables are cumulative since this instant, so it is the
+    denominator for per-second write-rate estimates. Falls back to 1.0 when the reset
+    time is unknown (e.g. never reset / very fresh cluster) to avoid division by zero.
+    """
+    val = fetch_scalar(
+        conn,
+        """
+        SELECT GREATEST(EXTRACT(EPOCH FROM (now() - stats_reset)), 1)::float8
+        FROM pg_stat_database WHERE datname = current_database()
+        """,
+    )
+    return float(val or 1.0)
+
+
+def table_sizing(
+    conn: psycopg.Connection, refs: set[TableRef] | None = None
+) -> list[TableSizing]:
+    """Per-table size + index + DML activity for planning (mirrors the manual guide).
+
+    Restricted to ordinary/partitioned user tables. When ``refs`` is given, only those
+    tables are returned (the replication scope); otherwise all user tables. Results are
+    ordered largest-first by total size.
+    """
+    rows = fetch_all(
+        conn,
+        """
+        SELECT n.nspname AS schema,
+               c.relname AS name,
+               st.n_live_tup AS est_rows,
+               pg_table_size(c.oid) AS table_bytes,
+               pg_indexes_size(c.oid) AS index_bytes,
+               pg_total_relation_size(c.oid) AS total_bytes,
+               (SELECT count(*) FROM pg_index i WHERE i.indrelid = c.oid) AS index_count,
+               st.n_tup_ins AS inserts,
+               st.n_tup_upd AS updates,
+               st.n_tup_del AS deletes
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        LEFT JOIN pg_stat_all_tables st ON st.relid = c.oid
+        WHERE c.relkind IN ('r', 'p')
+          AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+          AND n.nspname NOT LIKE 'pg_temp%'
+        ORDER BY pg_total_relation_size(c.oid) DESC
+        """,
+    )
+    out: list[TableSizing] = []
+    for r in rows:
+        ref = TableRef(r["schema"], r["name"])
+        if refs is not None and ref not in refs:
+            continue
+        out.append(
+            TableSizing(
+                ref=ref,
+                est_rows=int(r["est_rows"] or 0),
+                table_bytes=int(r["table_bytes"] or 0),
+                index_bytes=int(r["index_bytes"] or 0),
+                total_bytes=int(r["total_bytes"] or 0),
+                index_count=int(r["index_count"] or 0),
+                inserts=int(r["inserts"] or 0),
+                updates=int(r["updates"] or 0),
+                deletes=int(r["deletes"] or 0),
+            )
+        )
+    return out
+
+
 def get_settings(conn: psycopg.Connection, names: list[str]) -> dict[str, str | None]:
     """Fetch pg_settings values for the given names (missing -> None)."""
     rows = fetch_all(
@@ -395,19 +520,25 @@ def row_count(conn: psycopg.Connection, table: TableRef) -> int:
 
 
 def table_columns(conn: psycopg.Connection, table: TableRef) -> list[tuple]:
-    """Column signature (name, type, nullable) in ordinal order — for FR-18/19 target
-    schema/column compatibility. Empty list if the table does not exist."""
+    """Column signature (name, type, nullable, generated) in ordinal order — for
+    FR-18/19 target schema/column compatibility. ``generated`` is 'ALWAYS' for a
+    generated column, else 'NEVER'. A column that is generated on one side but not the
+    other (or a plain column present on only one side) makes the tuples unequal, which
+    ``check_target_columns`` reports. Empty list if the table does not exist."""
     rows = fetch_all(
         conn,
         """
-        SELECT column_name, data_type, is_nullable
+        SELECT column_name, data_type, is_nullable, is_generated
         FROM information_schema.columns
         WHERE table_schema = %s AND table_name = %s
         ORDER BY ordinal_position
         """,
         (table.schema, table.name),
     )
-    return [(r["column_name"], r["data_type"], r["is_nullable"]) for r in rows]
+    return [
+        (r["column_name"], r["data_type"], r["is_nullable"], r["is_generated"])
+        for r in rows
+    ]
 
 
 def table_checksum(conn: psycopg.Connection, table: TableRef, *, sample: bool) -> str | None:

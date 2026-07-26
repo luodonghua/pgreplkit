@@ -27,7 +27,7 @@ the tool specified in [REQUIREMENTS.md](./REQUIREMENTS.md). Requirement referenc
 ```
                          ┌──────────────────────────────┐
                          │            CLI (typer)         │  cli.py
-                         │  discover plan preflight ...   │
+                         │  discover sizing plan preflight │
                          └───────────────┬────────────────┘
                                          │ builds Context (config, mode, engine caps)
                          ┌───────────────▼────────────────┐
@@ -89,12 +89,15 @@ pgreplkit/
     │   ├── executor.py          # execute | dry-run | generate-only dispatch
     │   └── manifest.py          # manifest read/write/merge (FR-74)
     ├── checks/
-    │   └── version.py           # feature availability by PG version (FR-20, FR-21)
+    │   ├── version.py           # feature availability by PG version (FR-20, FR-21)
+    │   ├── preflight_checks.py  # pure check evaluators (facts → CheckResult) (FR-14..29)
+    │   └── results.py           # CheckResult / CheckReport (ok/warn/block)
     ├── aws/
     │   ├── rds.py               # boto3: describe/create RDS/Aurora, snapshots, clones, params, seed LSN (§8)
     │   └── permissions.py       # provision-mode IAM/quota/network prereq checks (FR-52a)
     ├── phases/
     │   ├── discover.py          # FR-4..9
+    │   ├── sizing.py            # pre-replication size & write-activity report (read-only)
     │   ├── preflight.py         # FR-14..31, FR-32..35 (globals check hook)
     │   ├── globals_.py          # roles & tablespaces (FR-32..35)
     │   ├── plan.py              # emit balanced layout as editable YAML (FR-12)
