@@ -1,0 +1,22 @@
+<!-- SHARED: pre-create the target schema. Only for the Replication Copy method
+     (copy_data copies ROWS, not DDL). Not needed for pg_dump (the dump carries the
+     schema) nor for physical snapshot/clone seeds (they carry schema + roles). -->
+<div class="guide-section" id="prepare-target-schema">
+  <h2>Prepare the target schema</h2>
+  <p>
+    The Replication Copy method copies <strong>data, not DDL</strong>: the tables (with their columns,
+    types, and constraints) must already exist on the target before you subscribe. Create them from
+    the source's schema:
+  </p>
+  <div class="code-block"><span class="code-label">bash — copy schema only (no data)</span>
+<pre><code>pg_dump --schema-only \
+  "host=SOURCE_HOST port=5432 user=repluser dbname=appdb" \
+| psql "host=TARGET_HOST port=5432 user=repluser dbname=appdb"</code></pre></div>
+  <div class="callout note">
+    <span class="callout-title">Roles / globals first</span>
+    <code>pg_dump --schema-only</code> does not include roles. If your objects are owned by specific
+    roles, create those roles on the target first (e.g. from <code>pg_dumpall --roles-only</code>,
+    dropping anything managed-platform-specific). On RDS/Aurora targets, pgreplkit's
+    <code>globals</code> step can recreate roles for you.
+  </div>
+</div>

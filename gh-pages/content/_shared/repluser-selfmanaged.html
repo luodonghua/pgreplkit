@@ -1,0 +1,29 @@
+<!-- SHARED: replication user on a SELF-MANAGED PostgreSQL source -->
+<div class="guide-section" id="repluser">
+  <h2>Create the replication user (on the source)</h2>
+  <p>
+    The subscriber connects to the source <em>as this role</em>, so create it on the
+    <strong>source</strong> (publisher). On self-managed PostgreSQL you set the
+    <code>REPLICATION</code> attribute directly.
+  </p>
+  <div class="code-block"><span class="code-label">psql — on SOURCE (self-managed)</span>
+<pre><code>-- login role with the REPLICATION attribute (needed to read replication slots)
+CREATE ROLE repluser WITH LOGIN REPLICATION PASSWORD 'strong-secret';
+
+-- allow it to read the data being replicated
+GRANT USAGE ON SCHEMA app TO repluser;
+GRANT SELECT ON ALL TABLES IN SCHEMA app TO repluser;
+ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT SELECT ON TABLES TO repluser;  -- future tables too</code></pre></div>
+  <p>Then permit the role to connect for replication in <code>pg_hba.conf</code> and reload:</p>
+  <div class="code-block"><span class="code-label">pg_hba.conf — on SOURCE (adjust the subscriber CIDR)</span>
+<pre><code># TYPE  DATABASE  USER      ADDRESS        METHOD
+host    appdb     repluser  10.0.0.0/24    scram-sha-256
+# then:  SELECT pg_reload_conf();</code></pre></div>
+  <div class="callout note">
+    <span class="callout-title">On the subscriber (target)</span>
+    The role that runs <code>CREATE SUBSCRIPTION</code> needs elevated rights: on PG&nbsp;16+ grant it
+    <code>pg_create_subscription</code> plus <code>CREATE</code> on the database; on
+    PG&nbsp;&lt;&nbsp;16 it must be a superuser. (Target is RDS/Aurora here &mdash; see the target row
+    of the prerequisites table above.)
+  </div>
+</div>

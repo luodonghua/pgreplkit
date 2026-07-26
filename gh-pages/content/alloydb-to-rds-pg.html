@@ -32,6 +32,8 @@ SHOW wal_level;   -- expect: logical</code></pre></div>
 </div>
 
 <div data-include="prerequisites-common"></div>
+<div data-include="repluser-alloydb"></div>
+<div data-sync="replication-copy"><div data-include="prepare-target-schema"></div></div>
 
 <div data-sync="replication-copy"><div data-include="setup-replication-copy"></div></div>
 <div data-sync="pg-dump"><div data-include="setup-pg-dump"></div></div>

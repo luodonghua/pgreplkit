@@ -13,6 +13,14 @@
     upgrading the clone &mdash; see the note at the end.)
   </div>
 
+  <div class="callout tip">
+    <span class="callout-title">No schema pre-creation needed here</span>
+    A fast clone is a <strong>full physical copy</strong> of the cluster volume: the clone already has
+    the entire schema, data, roles, and the replication user &mdash; so there is no
+    <code>pg_dump --schema-only</code> or role recreation step. You still create the replication user
+    on the <em>original source</em> (done above); the clone simply carries a copy of it.
+  </div>
+
   <div data-diagram="physical-seed-aurora"></div>
 
   <div class="step">

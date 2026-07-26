@@ -1,0 +1,29 @@
+<!-- SHARED: replication user on an Azure Database for PostgreSQL (Flexible Server) source -->
+<div class="guide-section" id="repluser">
+  <h2>Create the replication user (on the source)</h2>
+  <p>
+    The subscriber connects to the source <em>as this role</em>, so create it on the
+    <strong>source</strong> (publisher). On Azure Flexible Server there is no classic superuser; you
+    connect as the server admin user and grant the <code>azure_pg_admin</code> role (or
+    <code>REPLICATION</code> where the tier permits it).
+  </p>
+  <div class="code-block"><span class="code-label">psql — on SOURCE (Azure Flexible Server), as the admin user</span>
+<pre><code>CREATE ROLE repluser WITH LOGIN PASSWORD 'strong-secret';
+GRANT azure_pg_admin TO repluser;      -- Azure's admin role; grants replication capability
+
+GRANT USAGE ON SCHEMA app TO repluser;
+GRANT SELECT ON ALL TABLES IN SCHEMA app TO repluser;
+ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT SELECT ON TABLES TO repluser;  -- future tables too</code></pre></div>
+  <div class="callout note">
+    <span class="callout-title">Access control</span>
+    Azure Flexible Server access is governed by its <strong>firewall rules</strong> (public access)
+    or a private endpoint over VPN &mdash; not a hand-edited <code>pg_hba.conf</code>. Ensure the AWS
+    subscriber can reach it on 5432 (see the networking note above).
+  </div>
+  <div class="callout note">
+    <span class="callout-title">On the subscriber (target, RDS/Aurora)</span>
+    The subscribing role needs <code>rds_superuser</code> (PG&nbsp;&lt;&nbsp;16) or
+    <code>rds_replication</code> + <code>pg_create_subscription</code> (PG&nbsp;16+) &mdash; see the
+    target row of the prerequisites table above.
+  </div>
+</div>

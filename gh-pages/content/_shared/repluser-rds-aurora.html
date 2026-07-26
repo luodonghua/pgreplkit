@@ -1,0 +1,29 @@
+<!-- SHARED: replication user on an Amazon RDS / Aurora PostgreSQL source -->
+<div class="guide-section" id="repluser">
+  <h2>Create the replication user (on the source)</h2>
+  <p>
+    The subscriber connects to the source <em>as this role</em>, so create it on the
+    <strong>source</strong> (publisher). On RDS and Aurora you <strong>cannot</strong> set the
+    <code>REPLICATION</code> attribute directly &mdash; there is no superuser. Instead you grant the
+    managed <code>rds_replication</code> role, connecting as your RDS/Aurora master user.
+  </p>
+  <div class="code-block"><span class="code-label">psql — on SOURCE (RDS / Aurora), as the master user</span>
+<pre><code>CREATE ROLE repluser WITH LOGIN PASSWORD 'strong-secret';
+GRANT rds_replication TO repluser;      -- the managed replication privilege (not the attribute)
+
+GRANT USAGE ON SCHEMA app TO repluser;
+GRANT SELECT ON ALL TABLES IN SCHEMA app TO repluser;
+ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT SELECT ON TABLES TO repluser;  -- future tables too</code></pre></div>
+  <div class="callout note">
+    <span class="callout-title">No <code>pg_hba.conf</code> to edit</span>
+    On RDS/Aurora access is controlled by <strong>security groups</strong> and the DB's parameter
+    group, not a hand-edited <code>pg_hba.conf</code>. Allow the subscriber to reach the source on
+    5432 via the security group.
+  </div>
+  <div class="callout note">
+    <span class="callout-title">On the subscriber (target, RDS/Aurora)</span>
+    The role that runs <code>CREATE SUBSCRIPTION</code> needs <code>rds_superuser</code> (PG&nbsp;&lt;&nbsp;16)
+    or <code>rds_replication</code> + <code>pg_create_subscription</code> (PG&nbsp;16+) &mdash; see the
+    target row of the prerequisites table above.
+  </div>
+</div>

@@ -1,8 +1,10 @@
 <!-- SHARED: prerequisites-common.html — logical-replication basics that apply everywhere -->
 <div class="guide-section" id="common-prereqs">
-  <h2>Common prerequisites (all scenarios)</h2>
-  <p>These apply regardless of platform. The version &amp; platform-specific settings are in the
-     table above; the items here are true for every logical-replication setup.</p>
+  <h2>Prerequisites for every scenario</h2>
+  <p>These hold for every source/target and every initial-sync method. Steps that depend on your
+     choices &mdash; creating the replication <em>user</em>, and preparing the target <em>schema</em>
+     &mdash; appear in the scenario-specific sections below, because they differ between self-managed
+     and managed engines and between logical and physical (snapshot/clone) seeds.</p>
 
   <h3>Configuration parameters to tune</h3>
   <p>
@@ -232,75 +234,6 @@ FROM scope CROSS JOIN db;</code></pre></div>
     replication will not carry:
     <div class="code-block"><span class="code-label">psql — on SOURCE</span>
 <pre><code>SELECT count(*) AS large_object_count FROM pg_largeobject_metadata;</code></pre></div>
-  </div>
-
-  <h3>The target schema must exist before you subscribe</h3>
-  <p>
-    Logical replication copies <strong>data, not DDL</strong>. Tables (and their columns, types,
-    and constraints) must already exist on the target. Create them from the source's schema:
-  </p>
-  <div class="code-block"><span class="code-label">bash — copy schema only (no data)</span>
-<pre><code>pg_dump --schema-only \
-  "host=SOURCE port=5432 user=repluser dbname=appdb" \
-| psql "host=TARGET port=5432 user=repluser dbname=appdb"</code></pre></div>
-  <div class="callout note">
-    <span class="callout-title">Roles / globals</span>
-    <code>pg_dump --schema-only</code> does not include roles. If your objects are owned by
-    specific roles, create those roles on the target first (e.g. with
-    <code>pg_dumpall --roles-only</code>, editing out anything managed-platform-specific).
-  </div>
-
-  <h3>A dedicated replication user</h3>
-  <p>
-    Create a role specifically for the migration rather than reusing a superuser, where the platform
-    allows it. It needs the <code>REPLICATION</code> capability (to create/read replication slots on
-    the source) and <code>SELECT</code> on the tables being replicated. The subscriber connects to the
-    source <em>as this role</em>, so create it on the <strong>source</strong> (publisher).
-  </p>
-  <div class="code-block"><span class="code-label">psql — on SOURCE: self-managed PostgreSQL</span>
-<pre><code>-- 1. a login role with the REPLICATION attribute
-CREATE ROLE repluser WITH LOGIN REPLICATION PASSWORD 'strong-secret';
-
--- 2. let it read the data it must replicate
-GRANT USAGE ON SCHEMA app TO repluser;
-GRANT SELECT ON ALL TABLES IN SCHEMA app TO repluser;
--- make the grant apply to tables created later, too
-ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT SELECT ON TABLES TO repluser;</code></pre></div>
-  <p>
-    Then allow that role to connect for replication in <code>pg_hba.conf</code> (self-managed only) and
-    reload:
-  </p>
-  <div class="code-block"><span class="code-label">pg_hba.conf — on SOURCE (adjust the subscriber CIDR)</span>
-<pre><code># TYPE  DATABASE  USER      ADDRESS            METHOD
-host    appdb     repluser  10.0.0.0/24        scram-sha-256
-# then:  SELECT pg_reload_conf();</code></pre></div>
-
-  <h4>Managed platforms grant REPLICATION through a role, not the attribute</h4>
-  <p>On managed services you usually can't set the <code>REPLICATION</code> attribute directly; you
-     grant a platform role instead. The connecting/admin user is the one shown in each platform's row
-     of the version &amp; prerequisites table above.</p>
-  <div class="code-block"><span class="code-label">psql — on SOURCE: RDS / Aurora for PostgreSQL</span>
-<pre><code>CREATE ROLE repluser WITH LOGIN PASSWORD 'strong-secret';
-GRANT rds_replication TO repluser;                 -- RDS/Aurora replication privilege
-GRANT USAGE ON SCHEMA app TO repluser;
-GRANT SELECT ON ALL TABLES IN SCHEMA app TO repluser;
-ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT SELECT ON TABLES TO repluser;</code></pre></div>
-  <div class="code-block"><span class="code-label">psql — on SOURCE: Cloud SQL / AlloyDB / Azure Flexible Server</span>
-<pre><code>-- Cloud SQL / AlloyDB: connect as the admin (postgres / alloydbsuperuser) and grant REPLICATION
-CREATE ROLE repluser WITH LOGIN REPLICATION PASSWORD 'strong-secret';
--- Azure Flexible Server: connect as the admin user, then
---   CREATE ROLE repluser WITH LOGIN PASSWORD 'strong-secret';
---   GRANT azure_pg_admin TO repluser;   -- or REPLICATION where permitted
-
-GRANT USAGE ON SCHEMA app TO repluser;
-GRANT SELECT ON ALL TABLES IN SCHEMA app TO repluser;
-ALTER DEFAULT PRIVILEGES IN SCHEMA app GRANT SELECT ON TABLES TO repluser;</code></pre></div>
-  <div class="callout note">
-    <span class="callout-title">On the subscriber (target)</span>
-    The role that runs <code>CREATE SUBSCRIPTION</code> needs elevated rights: on PG&nbsp;16+ grant it
-    <code>pg_create_subscription</code> (plus <code>CREATE</code> on the database); on PG&nbsp;&lt;&nbsp;16
-    it must be a superuser (<code>rds_superuser</code> on RDS/Aurora). The exact target grant is in the
-    prerequisites table above.
   </div>
 
   <div class="callout warn">

@@ -15,6 +15,15 @@
     upgrade the restored target &mdash; see the upgrade note at the end.)
   </div>
 
+  <div class="callout tip">
+    <span class="callout-title">No schema pre-creation needed here</span>
+    Unlike the logical methods, a snapshot restore is a <strong>full physical copy</strong>: the green
+    instance already has the entire schema, data, roles, and the replication user &mdash; so there is
+    no <code>pg_dump --schema-only</code> or role recreation step. You still create the replication
+    user on the <em>original source</em> (done above); the restore simply carries a copy of it onto
+    green. After restore, verify that user can still authenticate on green if you rotate its password.
+  </div>
+
   <div data-diagram="physical-seed-rds"></div>
 
   <div class="step">
